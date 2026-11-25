@@ -1,5 +1,7 @@
 /target/
 **/target/
+/dist/
+graphify-out/cache/last_query_stamp
 $log
 *.log
 wallbang_log.txt

@@ -83,6 +83,14 @@ pub fn build_number() -> Option<u32> {
     unsafe { memory::read::<u32>(base + ENGINE_BUILD_NUMBER) }
 }
 
+/// `Some(true)` — билд тот, под который сняты офсеты; `Some(false)` — билд
+/// другой (работать с текущими адресами нельзя); `None` — engine2 ещё не
+/// загружен или dwBuildNumber не читается, то есть проверить нечем.
+#[inline]
+pub fn build_supported() -> Option<bool> {
+    build_number().map(wallbang_config::offsets::build_matches)
+}
+
 #[inline]
 pub fn csgo_input() -> Option<usize> {
     let client = module_base("client.dll")?;

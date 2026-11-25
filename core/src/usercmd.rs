@@ -12,6 +12,8 @@ pub const IN_BACK: u64 = 1 << 4;
 pub const IN_USE: u64 = 1 << 5;
 pub const IN_LEFT: u64 = 1 << 7;
 pub const IN_RIGHT: u64 = 1 << 8;
+pub const IN_MOVELEFT: u64 = 1 << 9;
+pub const IN_MOVERIGHT: u64 = 1 << 10;
 pub const IN_RELOAD: u64 = 1 << 13;
 
 pub const BASE_BITS_BUTTON_PB: u32 = 0x2;
@@ -163,6 +165,28 @@ impl UserCmd {
     #[inline]
     pub fn remove_buttons(self, bits: u64) -> bool {
         self.set_buttons(self.buttons() & !bits)
+    }
+
+    /// Reads the protobuf `CInButtonStatePB::nValue` copy of the same buttons.
+    #[inline]
+    pub fn base_buttons(self) -> u64 {
+        unsafe {
+            let base = self.base();
+            if base == 0 {
+                return 0;
+            }
+            let Some(pb) = memory::read_ptr(base + BASE_BUTTON_STATE) else {
+                return 0;
+            };
+            memory::read::<u64>(pb + PB_BUTTON_VALUE).unwrap_or(0)
+        }
+    }
+
+    /// Sets or clears a single button bit, no-op when it already matches.
+    pub fn set_button(self, bit: u64, down: bool) -> bool {
+        let current = self.buttons();
+        let next = if down { current | bit } else { current & !bit };
+        next == current || self.set_buttons(next)
     }
 
     #[inline]

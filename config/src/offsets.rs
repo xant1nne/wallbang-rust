@@ -16,6 +16,23 @@ pub const DW_LOCAL_PLAYER_CONTROLLER: usize = 0x2536300;
 pub const DW_VIEW_MATRIX: usize = 0x25643D0;
 pub const DW_VIEW_ANGLES: usize = 0x2574BE8;
 pub const DW_CSGO_INPUT: usize = 0x2574560;
+// i_csgo_input: in_thirdperson 0x229, movement fields 0x258..0x26C, view_angles 0x2D0
+// (Celerity i_csgo_input.hpp).
+pub const CSGO_INPUT_IN_THIRDPERSON: usize = 0x229;
+pub const CSGO_INPUT_FORWARD_MOVE: usize = 0x258;
+pub const CSGO_INPUT_LEFT_MOVE: usize = 0x25C;
+pub const CSGO_INPUT_MOUSE_DELTA_X: usize = 0x264;
+pub const CSGO_INPUT_VIEW_ANGLES: usize = 0x2D0;
+// CViewSetup (Celerity c_view_setup.hpp): world/viewmodel fov, origin, angles,
+// explicit-aspect flag.
+pub const VIEW_SETUP_WORLD_FOV: usize = 0x498;
+pub const VIEW_SETUP_VIEWMODEL_FOV: usize = 0x49C;
+pub const VIEW_SETUP_ORIGIN: usize = 0x4A0;
+pub const VIEW_SETUP_VIEW_ANGLE: usize = 0x4B8;
+pub const VIEW_SETUP_ASPECT_RATIO: usize = 0x4D4;
+pub const VIEW_SETUP_FLAGS: usize = 0x551;
+/// CViewSetup::m_view_flags explicit-aspect bit (Celerity aspect_ratio).
+pub const VIEW_FLAG_EXPLICIT_ASPECT: u8 = 1 << 1;
 pub const DW_GLOBAL_VARS: usize = 0x222AAD0;
 pub const DW_PREDICTION: usize = 0x255E9C0;
 pub const DW_GLOW_MANAGER: usize = 0x255B110;
@@ -24,18 +41,28 @@ pub const DW_INPUT_SYSTEM: usize = 0x46BC0; // inputsystem.dll
 pub const INPUT_RELATIVE_MOUSE_FLAG_OFFSET: usize = 84;
 pub const INPUT_SET_RELATIVE_MOUSE_VFUNC: usize = 76;
 
-// C_BaseEntity: m_iHealth 0x34C, m_iTeamNum 0x3E7, m_pGameSceneNode 0x330.
+// C_BaseEntity: m_iHealth 0x34C, m_iTeamNum 0x3E7, m_pGameSceneNode 0x330, m_pCollision 0x340.
 pub const PAWN_HEALTH: usize = 0x34C;
 pub const PAWN_LIFE_STATE: usize = 0x354;
 pub const PAWN_TEAM: usize = 0x3E7;
 pub const PAWN_FLAGS: usize = 0x3F4;
 pub const PAWN_VELOCITY: usize = 0x430;
+/// C_BaseEntity::m_vecAbsVelocity (м/с в мировых координатах) — нужен movement.
+pub const PAWN_ABS_VELOCITY: usize = 0x3F8;
+/// C_BaseEntity::m_MoveType (MOVETYPE_*).
+pub const PAWN_MOVE_TYPE: usize = 0x525;
+pub const PAWN_COLLISION: usize = 0x340;
+// CCollisionProperty::m_vecMins / m_vecMaxs (Vector) в мировых координатах после + origin.
+pub const COLLISION_MINS: usize = 0x40;
+pub const COLLISION_MAXS: usize = 0x4C;
 // C_BaseModelEntity::m_vecViewOffset (CNetworkViewOffsetVector, xyz + w).
 pub const PAWN_VIEW_OFFSET: usize = 0xF60;
 // C_CSPlayerPawn::m_ArmorValue.
 pub const PAWN_ARMOR: usize = 0x1F00;
 // C_CSPlayerPawn::m_entitySpottedState 0x1EB8 + EntitySpottedState_t::m_bSpotted 0x8.
 pub const PAWN_SPOTTED: usize = 0x1EC0;
+/// EntitySpottedState_t::m_bSpottedByMask (uint32[2]) at +0xC.
+pub const PAWN_SPOTTED_BY_MASK: usize = 0x1EC4;
 // C_CSPlayerPawn::m_bIsScoped / m_iShotsFired.
 pub const PAWN_SCOPED: usize = 0x1ED0;
 pub const PAWN_SHOTS_FIRED: usize = 0x1EE8;
@@ -45,6 +72,22 @@ pub const PAWN_SCENE_NODE: usize = 0x330;
 // C_BasePlayerPawn::m_pWeaponServices / CPlayer_WeaponServices::m_hActiveWeapon.
 pub const PAWN_WEAPON_SERVICES: usize = 0x12F0;
 pub const WEAPON_SERVICE_ACTIVE: usize = 0x60;
+// CPlayer_WeaponServices::m_hMyWeapons (C_NetworkUtlVectorBase<CHandle>).
+pub const WEAPON_SERVICES_WEAPONS: usize = 0x48;
+/// C_NetworkUtlVectorBase: `u32 m_size` at +0, element pointer at +8.
+pub const NET_VECTOR_SIZE: usize = 0x00;
+pub const NET_VECTOR_DATA: usize = 0x08;
+/// Handle array cap used when scanning a player's weapon list for C4.
+pub const MAX_OWNED_WEAPONS: usize = 64;
+/// C_EconItemView::m_iItemDefinitionIndex для C4.
+pub const WEAPON_C4_DEF_INDEX: i16 = 49;
+// C_BasePlayerPawn::m_pItemServices → CCSPlayer_ItemServices.
+pub const PAWN_ITEM_SERVICES: usize = 0x12F8;
+pub const ITEM_SERVICES_DEFUSER: usize = 0x48;
+pub const ITEM_SERVICES_HELMET: usize = 0x49;
+// CCSPlayerController::m_pInGameMoneyServices → m_iAccount.
+pub const CONTROLLER_MONEY_SERVICES: usize = 0x818;
+pub const MONEY_ACCOUNT: usize = 0x40;
 // C_BasePlayerWeapon::m_iClip1 and C_EconEntity::m_AttributeManager::m_Item::m_iItemDefinitionIndex.
 pub const WEAPON_CLIP1: usize = 0x1928;
 pub const WEAPON_DEF_INDEX: usize = 0x1290 + 0x50 + 0x1BA;
@@ -52,6 +95,8 @@ pub const WEAPON_DEF_INDEX: usize = 0x1290 + 0x50 + 0x1BA;
 pub const WEAPON_VDATA: usize = 0x380 + 0x8;
 // CCSWeaponBaseVData::m_iMaxClip1 (the weapon name string lives at +0x720).
 pub const VDATA_MAX_CLIP1: usize = 0x4D0;
+/// CCSWeaponBaseVData::m_szName — `const char*` ("weapon_ak47").
+pub const VDATA_WEAPON_NAME: usize = 0x720;
 // CSkeletonInstance::m_modelState 0x140; CModelState::m_pBoneArray 0x80 (IDA).
 pub const SCENE_NODE_MODEL_STATE: usize = 0x140;
 pub const MODEL_STATE_BONE_ARRAY: usize = 0x80;
@@ -61,6 +106,17 @@ pub const CONTROLLER_PLAYER_NAME: usize = 0x878;
 pub const PAWN_CONTROLLER_HANDLE: usize = 0x14BC;
 pub const ENGINE_BUILD_NUMBER: usize = 0x6B2D1C;
 pub const NETCHANNEL_CLIENT: usize = 0x9AFB70;
+
+/// Engine build these offsets and signatures were dumped for (cs2-dumper
+/// 2026-11-24). On any other build the module, entity layout and every
+/// `dw*` offset are unverified, so the snapshot refuses to read game memory.
+pub const EXPECTED_BUILD_NUMBER: u32 = 14201;
+
+/// True when `actual` is the build these offsets were dumped for.
+#[inline]
+pub const fn build_matches(actual: u32) -> bool {
+    actual == EXPECTED_BUILD_NUMBER
+}
 
 // ---- CUserCmd (client.dll) ----
 // Сверено с рабочим internal'ом (asphyxia-cs2) и проверено сигнатурой CreateMove
@@ -135,4 +191,22 @@ pub fn describe_missing() -> Vec<&'static str> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_matches, EXPECTED_BUILD_NUMBER, is_resolved};
+
+    #[test]
+    fn build_guard_accepts_only_the_dumped_build() {
+        assert!(build_matches(EXPECTED_BUILD_NUMBER));
+        assert!(!build_matches(EXPECTED_BUILD_NUMBER + 1));
+        assert!(!build_matches(EXPECTED_BUILD_NUMBER - 1));
+        assert!(!build_matches(0));
+    }
+
+    #[test]
+    fn dw_offsets_are_resolved() {
+        assert!(is_resolved());
+    }
 }

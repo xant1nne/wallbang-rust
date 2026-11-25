@@ -5,8 +5,9 @@ use crate::ui::{Style, Ui, ITEM_SPACING_X, POPUP_W, ROUNDING, WIDGET_ROUNDING};
 use std::sync::atomic::{AtomicBool, Ordering};
 use wallbang_config::constants::DEFAULT_PROFILE;
 use wallbang_config::storage::Storage;
+use wallbang_config::settings::{has_flag, EspPlayerSettings};
 use wallbang_config::ui_state::{
-    ChamsCfg, ChamsLayer, ExtendedUiState, CATALOG_ITEMS, PAINT_KITS, SkinItem,
+    ChamsCfg, ChamsLayer, ExtendedUiState, PlayerOverlayCfg, CATALOG_ITEMS, PAINT_KITS, SkinItem,
 };
 use wallbang_core::input::CursorController;
 use wallbang_core::math::Vec2;
@@ -58,7 +59,7 @@ const PITCH_ITEMS: [&str; 3] = ["none", "down", "up"];
 const BOX_STYLES: [&str; 2] = ["full", "cornered"];
 const BAR_POSITIONS: [&str; 3] = ["left", "top", "bottom"];
 const DISPLAY_TYPES: [&str; 3] = ["text", "icon", "text + icon"];
-const FLAG_NAMES: [&str; 8] = ["money", "armor", "kit", "scoped", "defusing", "flashed", "ping", "distance"];
+const FLAG_NAMES: [&str; 5] = ["distance", "money", "armor", "scoped", "bomb"];
 const ITEM_GROUPS: [&str; 6] = ["pistols", "smgs", "rifles", "snipers", "heavy", "grenades"];
 const PROJ_GROUPS: [&str; 6] = ["he grenade", "flashbang", "smoke", "molotov", "decoy", "inferno"];
 const SURFACE_PRESETS: [&str; 8] = [
@@ -200,6 +201,105 @@ fn typed_preset_to_ui(cfg: &wallbang_config::settings::ChamsPreset) -> ChamsCfg 
     }
 }
 
+/// Copies the Celerity-style target config into the Players-tab control mirror.
+fn esp_target_to_overlay(cfg: &EspPlayerSettings, ov: &mut PlayerOverlayCfg) {
+    use wallbang_config::settings::esp_bits;
+    ov.enabled = cfg.enabled;
+    ov.box_on = cfg.r#box;
+    ov.box_style = if cfg.corner_length >= 0.5 { 0 } else { 1 };
+    ov.corner_len = cfg.corner_length;
+    ov.box_color = cfg.box_color;
+    ov.skel_on = cfg.skeleton;
+    ov.skel_vis = cfg.skeleton_color;
+    ov.skel_occ = cfg.skeleton_color;
+    ov.health.enabled = cfg.health_bar;
+    ov.health.gradient = has_flag(cfg.health_type, esp_bits::GRADIENT);
+    ov.health.show_value = has_flag(cfg.health_type, esp_bits::TEXT);
+    ov.health.full_color = cfg.health_high_color;
+    ov.health.low_color = cfg.health_low_color;
+    ov.name_on = cfg.name;
+    ov.name_color = cfg.name_color;
+    ov.weapon_on = cfg.weapon;
+    ov.weapon_display = if has_flag(cfg.weapon_type, esp_bits::WEAPON_ICON) {
+        if has_flag(cfg.weapon_type, esp_bits::WEAPON_TEXT) {
+            2
+        } else {
+            1
+        }
+    } else {
+        0
+    };
+    ov.weapon_text = cfg.weapon_color;
+    ov.ammo.enabled = cfg.ammo;
+    ov.ammo.gradient = has_flag(cfg.ammo_type, esp_bits::GRADIENT);
+    ov.ammo.show_value = has_flag(cfg.ammo_type, esp_bits::TEXT);
+    ov.ammo.full_color = cfg.ammo_high_color;
+    ov.ammo.low_color = cfg.ammo_low_color;
+    ov.flags_on = cfg.flags;
+    let flag_bits = [
+        esp_bits::FLAG_DISTANCE,
+        esp_bits::FLAG_CASH,
+        esp_bits::FLAG_ARMOR,
+        esp_bits::FLAG_SCOPED,
+        esp_bits::FLAG_BOMB,
+    ];
+    for (slot, bit) in ov.flags.iter_mut().zip(flag_bits.iter().copied()) {
+        *slot = has_flag(cfg.flags_type, bit);
+    }
+    ov.flags_color = cfg.flags_color;
+}
+
+/// Writes the Players-tab controls back into the typed Celerity config.
+fn esp_target_from_overlay(ov: &PlayerOverlayCfg, cfg: &mut EspPlayerSettings) {
+    use wallbang_config::settings::esp_bits;
+    cfg.enabled = ov.enabled;
+    cfg.r#box = ov.box_on;
+    cfg.corner_length = if ov.box_style == 0 {
+        0.5
+    } else {
+        ov.corner_len.clamp(0.005, 0.5)
+    };
+    cfg.box_color = ov.box_color;
+    cfg.skeleton = ov.skel_on;
+    cfg.skeleton_color = ov.skel_vis;
+    cfg.health_bar = ov.health.enabled;
+    cfg.health_type = esp_bits::BAR
+        | if ov.health.gradient { esp_bits::GRADIENT } else { 0 }
+        | if ov.health.show_value { esp_bits::TEXT } else { 0 };
+    cfg.health_high_color = ov.health.full_color;
+    cfg.health_low_color = ov.health.low_color;
+    cfg.name = ov.name_on;
+    cfg.name_color = ov.name_color;
+    cfg.weapon = ov.weapon_on;
+    cfg.weapon_type = match ov.weapon_display {
+        1 => esp_bits::WEAPON_ICON,
+        2 => esp_bits::WEAPON_ICON | esp_bits::WEAPON_TEXT,
+        _ => esp_bits::WEAPON_TEXT,
+    };
+    cfg.weapon_color = ov.weapon_text;
+    cfg.ammo = ov.ammo.enabled;
+    cfg.ammo_type = esp_bits::BAR
+        | if ov.ammo.gradient { esp_bits::GRADIENT } else { 0 }
+        | if ov.ammo.show_value { esp_bits::TEXT } else { 0 };
+    cfg.ammo_high_color = ov.ammo.full_color;
+    cfg.ammo_low_color = ov.ammo.low_color;
+    cfg.flags = ov.flags_on;
+    let flag_bits = [
+        esp_bits::FLAG_DISTANCE,
+        esp_bits::FLAG_CASH,
+        esp_bits::FLAG_ARMOR,
+        esp_bits::FLAG_SCOPED,
+        esp_bits::FLAG_BOMB,
+    ];
+    cfg.flags_type = ov
+        .flags
+        .iter()
+        .zip(flag_bits.iter().copied())
+        .filter(|(on, _)| **on)
+        .fold(0, |mask, (_, bit)| mask | bit);
+    cfg.flags_color = ov.flags_color;
+}
+
 // Menu shell only: feature panels are kept in the source for later, but are
 // not wired into the frame until the corresponding features actually exist.
 #[allow(dead_code)]
@@ -250,6 +350,7 @@ impl Menu {
         let misc = &settings.misc;
         self.ext.hit_logs = misc.hit_log;
         self.ext.miss_logs = misc.miss_log;
+        self.ext.reveal_radar = misc.reveal_radar;
         let tracers = &settings.visual.tracers;
         self.ext.hit_marker = tracers.hit_marker;
         self.ext.hit_marker_type = tracers.hit_marker_type;
@@ -264,6 +365,7 @@ impl Menu {
         self.ext.death_sound_vol = audio.death_sound_volume;
         let movement = &misc.movement;
         self.ext.jumpbug = movement.jumpbug;
+        self.ext.mini_jump = movement.mini_jump;
         self.ext.fastladder = movement.fast_ladder;
         self.ext.edgejump = movement.edgejump;
         self.ext.edgestop = movement.edgestop;
@@ -273,6 +375,13 @@ impl Menu {
         self.ext.tp_dist = viewmodel.tp_dist;
         self.ext.tp_hull = viewmodel.tp_hull;
         self.ext.vm_xyzf = viewmodel.offset;
+        self.ext.custom_fov = viewmodel.fov_override;
+        self.ext.fov_val = viewmodel.fov_value;
+        self.ext.scoped_fov_ov = viewmodel.scoped_fov_override;
+        self.ext.scoped_fov = viewmodel.scoped_fov;
+        self.ext.aspect_on = viewmodel.aspect_enabled;
+        self.ext.aspect_val = viewmodel.aspect_value;
+        self.ext.vm_adjust = viewmodel.adjust;
         let chams = &settings.visual.chams;
         self.ext.chams[0] = typed_preset_to_ui(&chams.enemy);
         self.ext.chams[1] = typed_preset_to_ui(&chams.team);
@@ -282,27 +391,35 @@ impl Menu {
         for (slot, preset) in self.ext.ragdoll_chams.iter_mut().zip(chams.ragdoll.iter()) {
             *slot = typed_preset_to_ui(preset);
         }
-        // Enemy overlay mirrors the typed EspSettings so profile loads reach
-        // the Players tab and the read-only ESP draw path alike.
+        // Legacy flat EspSettings still feeds the floating preview panel; the
+        // Celerity-style per-target configs below are the source of truth for
+        // the world overlay (enemies on subtab 0, teammates on subtab 1).
         let esp = &settings.esp;
-        let ov = &mut self.ext.overlays[0];
-        ov.enabled = esp.enabled;
-        ov.box_on = esp.r#box;
-        ov.box_style = esp.box_style;
-        ov.corner_len = esp.corner_size;
-        ov.box_color = esp.box_color;
-        ov.skel_on = esp.skeleton;
-        ov.skel_thick = esp.skeleton_thickness;
-        ov.skel_vis = esp.skeleton_visible_color;
-        ov.skel_occ = esp.skeleton_occluded_color;
-        ov.health.enabled = esp.health || esp.health_bar;
-        ov.health.position = esp.health_pos;
-        ov.name_on = esp.name;
-        ov.name_color = esp.name_color;
-        ov.weapon_on = esp.weapon;
-        ov.ammo.enabled = esp.ammo;
-        ov.flags[1] = esp.armor;
-        ov.flags[7] = esp.distance;
+        {
+            let ov = &mut self.ext.overlays[0];
+            ov.enabled = esp.enabled;
+            ov.box_on = esp.r#box;
+            ov.box_style = esp.box_style;
+            ov.corner_len = esp.corner_size;
+            ov.box_color = esp.box_color;
+            ov.skel_on = esp.skeleton;
+            ov.skel_thick = esp.skeleton_thickness;
+            ov.skel_vis = esp.skeleton_visible_color;
+            ov.skel_occ = esp.skeleton_occluded_color;
+            ov.health.enabled = esp.health || esp.health_bar;
+            ov.health.position = esp.health_pos;
+            ov.health.full_color = esp.health_full_color;
+            ov.health.low_color = esp.health_low_color;
+            ov.name_on = esp.name;
+            ov.name_color = esp.name_color;
+            ov.weapon_on = esp.weapon;
+            ov.ammo.enabled = esp.ammo;
+            ov.ammo.full_color = esp.ammo_color;
+            ov.flags[0] = esp.distance;
+            ov.flags[2] = esp.armor;
+        }
+        esp_target_to_overlay(&settings.esp.enemies, &mut self.ext.overlays[0]);
+        esp_target_to_overlay(&settings.esp.teammates, &mut self.ext.overlays[1]);
         let ambience = &settings.visual.ambience;
         self.ext.skybox_mat = ambience.skybox;
         self.ext.skybox_idx = ambience.skybox_idx;
@@ -364,14 +481,24 @@ impl Menu {
         esp.health = ov.health.enabled;
         esp.health_bar = ov.health.enabled;
         esp.health_pos = ov.health.position;
+        esp.health_full_color = ov.health.full_color;
+        esp.health_low_color = ov.health.low_color;
         esp.name = ov.name_on;
         esp.name_color = ov.name_color;
         esp.weapon = ov.weapon_on;
         esp.ammo = ov.ammo.enabled;
-        esp.armor = ov.flags[1];
-        esp.distance = ov.flags[7];
+        esp.ammo_color = ov.ammo.full_color;
+        esp.armor = ov.flags[2];
+        esp.distance = ov.flags[0];
+        let esp = &mut settings.esp;
+        esp_target_from_overlay(&ext.overlays[0], &mut esp.enemies);
+        esp_target_from_overlay(&ext.overlays[1], &mut esp.teammates);
+        // Master toggle: the world overlay draws when at least one target
+        // class is enabled and the global ESP switch is on.
+        esp.enabled = esp.enemies.enabled || esp.teammates.enabled;
         settings.misc.hit_log = ext.hit_logs;
         settings.misc.miss_log = ext.miss_logs;
+        settings.misc.reveal_radar = ext.reveal_radar;
 
         let tracers = &mut settings.visual.tracers;
         tracers.hit_marker = ext.hit_marker;
@@ -389,6 +516,7 @@ impl Menu {
 
         let movement = &mut settings.misc.movement;
         movement.jumpbug = ext.jumpbug;
+        movement.mini_jump = ext.mini_jump;
         movement.fast_ladder = ext.fastladder;
         movement.edgejump = ext.edgejump;
         movement.edgestop = ext.edgestop;
@@ -399,6 +527,14 @@ impl Menu {
         viewmodel.tp_dist = ext.tp_dist;
         viewmodel.tp_hull = ext.tp_hull;
         viewmodel.offset = ext.vm_xyzf;
+        viewmodel.fov_override = ext.custom_fov;
+        viewmodel.fov_value = ext.fov_val;
+        viewmodel.scoped_fov_override = ext.scoped_fov_ov;
+        viewmodel.scoped_fov = ext.scoped_fov;
+        viewmodel.aspect_enabled = ext.aspect_on;
+        viewmodel.aspect_value = ext.aspect_val;
+        viewmodel.adjust = ext.vm_adjust;
+        viewmodel.fov = ext.vm_xyzf[3];
 
         let ambience = &mut settings.visual.ambience;
         ambience.skybox = ext.skybox_mat;
@@ -458,6 +594,11 @@ impl Menu {
         }
         self.toggle_held = key_now;
         MENU_OPEN.store(self.open, Ordering::Relaxed);
+        // Menu open: free the OS cursor (game clips it and consumes raw input).
+        crate::hooks::update_menu_cursor(self.open);
+        if self.open {
+            crate::hooks::enforce_menu_cursor();
+        }
         self.cursor.sync(self.open);
         self.load_ui_settings(state);
         self.preview.sync_settings(state);
@@ -465,7 +606,7 @@ impl Menu {
         // shell, so showing hotkey/indicator/spectator placeholders would be
         // fake data. Re-enable `draw_hud_widgets` once the features exist.
         if !self.open || self.tab != PREVIEW_TAB {
-            let cfg = self.preview.native_config();
+            let cfg = self.preview.native_config(state);
             crate::native_preview::set_request(false, (0.0, 0.0, 0.0, 0.0), (screen_w, screen_h), cfg);
             crate::preview::clear_model_request();
         }
@@ -589,7 +730,17 @@ impl Menu {
                 px = (screen_w - pw - 8.0).max(8.0);
             }
             let py = my.min((screen_h - ph - 8.0).max(8.0)).max(8.0);
-            self.preview.draw_panel(&mut self.ui, dl, px, py, pw, ph, &style);
+            self.preview.draw_panel(
+                state,
+                &mut self.ext.overlays[0],
+                &mut self.ui,
+                dl,
+                px,
+                py,
+                pw,
+                ph,
+                &style,
+            );
         }
     }
 
@@ -1325,7 +1476,7 @@ impl Menu {
                 ui.checkbox(dl, "box", &mut ov.box_on, s);
                 ui.popup(dl, "##box_popup", POPUP_W, 124.0, s, |ui, dl| {
                     ui.combo(dl, "style##box", &mut ov.box_style, &BOX_STYLES, s);
-                    ui.slider_f32(dl, "corner length", &mut ov.corner_len, 2.0, 20.0, 0, "", s);
+                    ui.slider_f32(dl, "corner length", &mut ov.corner_len, 0.05, 0.5, 2, "", s);
                     ui.color_picker(dl, "color##box", &mut ov.box_color, s);
                 });
                 ui.checkbox(dl, "skeleton", &mut ov.skel_on, s);
@@ -1363,8 +1514,9 @@ impl Menu {
                     ui.color_picker(dl, "icon color##wep", &mut ov.weapon_icon, s);
                 });
                 ui.checkbox(dl, "flags", &mut ov.flags_on, s);
-                ui.popup(dl, "##flags_popup", POPUP_W, 66.0, s, |ui, dl| {
+                ui.popup(dl, "##flags_popup", POPUP_W, 110.0, s, |ui, dl| {
                     ui.multicombo(dl, "flags##mc", &mut ov.flags, &FLAG_NAMES, s);
+                    ui.color_picker(dl, "color##flags", &mut ov.flags_color, s);
                 });
                 ui.checkbox(dl, "oof arrows", &mut ov.oof_on, s);
                 ui.popup(dl, "##oof_popup", POPUP_W, 146.0, s, |ui, dl| {
@@ -1967,6 +2119,7 @@ impl Menu {
                     ui.checkbox(dl, "bhop", &mut settings.misc.bhop, s);
                     ui.checkbox(dl, "autostrafe", &mut settings.misc.autostrafe, s);
                     ui.checkbox(dl, "jumpbug", &mut self.ext.jumpbug, s);
+                    ui.checkbox(dl, "mini jump", &mut self.ext.mini_jump, s);
                     ui.checkbox(dl, "fastladder", &mut self.ext.fastladder, s);
                     ui.checkbox(dl, "edgejump", &mut self.ext.edgejump, s);
                     ui.checkbox(dl, "edgestop", &mut self.ext.edgestop, s);

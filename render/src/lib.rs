@@ -1,11 +1,13 @@
 // Config block: рендер не знает офсетов; все чтения состояния идут через wallbang_core::state.
 pub mod draw;
 pub mod dx11;
+pub mod esp_draw;
 pub mod font;
 pub mod hooks;
 pub mod menu;
 pub mod model;
 pub mod native_preview;
+pub mod pixel_font;
 pub mod preview;
 pub mod shaders;
 pub mod ui;

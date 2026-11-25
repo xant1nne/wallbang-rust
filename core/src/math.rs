@@ -31,6 +31,7 @@ impl Vec2 {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[repr(C)]
 pub struct Vec3 {
     pub x: f32,
     pub y: f32,

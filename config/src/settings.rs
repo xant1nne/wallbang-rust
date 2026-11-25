@@ -146,12 +146,24 @@ impl Default for AmbienceSettings {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ViewmodelSettings {
+    /// Viewmodel FOV override used while `adjust` is on.
     pub fov: f32,
     /// x, y, z, fov — same layout as the C++ viewmodel offset helper.
     pub offset: [f32; 4],
     pub thirdperson: bool,
     pub tp_dist: f32,
     pub tp_hull: f32,
+    /// Celerity `fov_override`/`fov_value`: world FOV override (not while scoped).
+    pub fov_override: bool,
+    pub fov_value: f32,
+    /// Scoped FOV override.
+    pub scoped_fov_override: bool,
+    pub scoped_fov: f32,
+    /// Celerity `aspect_ratio_enabled`/`aspect_ratio_value`.
+    pub aspect_enabled: bool,
+    pub aspect_value: f32,
+    /// Celerity `position_enabled`/`enabled`: viewmodel adjust master.
+    pub adjust: bool,
 }
 
 impl Default for ViewmodelSettings {
@@ -162,6 +174,13 @@ impl Default for ViewmodelSettings {
             thirdperson: false,
             tp_dist: 120.0,
             tp_hull: 6.0,
+            fov_override: false,
+            fov_value: 90.0,
+            scoped_fov_override: false,
+            scoped_fov: 45.0,
+            aspect_enabled: false,
+            aspect_value: 1.333,
+            adjust: false,
         }
     }
 }
@@ -339,6 +358,8 @@ pub struct MovementSettings {
     pub turn_boost: f32,
     pub obstacle_avoidance: bool,
     pub jumpbug: bool,
+    /// Celerity `bhop.mini_jump`: crouch on the jump tick for lower jumps.
+    pub mini_jump: bool,
     pub edgejump: bool,
     pub edgestop: bool,
     pub edgebug: bool,
@@ -355,6 +376,7 @@ impl Default for MovementSettings {
             turn_boost: 1.0,
             obstacle_avoidance: false,
             jumpbug: false,
+            mini_jump: false,
             edgejump: false,
             edgestop: false,
             edgebug: false,
@@ -863,11 +885,103 @@ impl Default for CombatSettings {
     }
 }
 
+/// ESP option bit masks, 1:1 with Celerity `esp_bits` (`src/config.hpp`).
+pub mod esp_bits {
+    // health/ammo element types (shared mask layout)
+    pub const TEXT: usize = 1 << 0;
+    pub const BAR: usize = 1 << 1;
+    pub const GRADIENT: usize = 1 << 2;
+
+    // weapon display types
+    pub const WEAPON_TEXT: usize = 1 << 0;
+    pub const WEAPON_ICON: usize = 1 << 1;
+
+    // right-side info flags
+    pub const FLAG_DISTANCE: usize = 1 << 0;
+    pub const FLAG_CASH: usize = 1 << 1;
+    pub const FLAG_ARMOR: usize = 1 << 2;
+    pub const FLAG_SCOPED: usize = 1 << 3;
+    pub const FLAG_BOMB: usize = 1 << 4;
+}
+
+#[inline]
+pub const fn has_flag(mask: usize, flag: usize) -> bool {
+    mask & flag != 0
+}
+
+/// One ESP target config, 1:1 with Celerity `esp_player_cfg`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EspPlayerSettings {
+    pub enabled: bool,
+    /// Serialized as the JSON key `box` (`box` is a Rust keyword).
+    #[serde(rename = "box")]
+    pub r#box: bool,
+    /// Corner length as a fraction of the smaller box side (0.005..=0.5).
+    /// 0.5 draws a full rectangle.
+    pub corner_length: f32,
+    pub name: bool,
+    pub weapon: bool,
+    /// `esp_bits::WEAPON_TEXT` / `esp_bits::WEAPON_ICON`.
+    pub weapon_type: usize,
+    pub health_bar: bool,
+    /// `esp_bits::BAR` / `esp_bits::GRADIENT` / `esp_bits::TEXT`.
+    pub health_type: usize,
+    pub skeleton: bool,
+    pub ammo: bool,
+    pub ammo_type: usize,
+    pub flags: bool,
+    pub flags_type: usize,
+    pub box_color: Rgba,
+    pub name_color: Rgba,
+    pub weapon_color: Rgba,
+    pub health_low_color: Rgba,
+    pub health_high_color: Rgba,
+    pub skeleton_color: Rgba,
+    pub ammo_low_color: Rgba,
+    pub ammo_high_color: Rgba,
+    pub flags_color: Rgba,
+}
+
+impl Default for EspPlayerSettings {
+    fn default() -> Self {
+        Self {
+            // Same defaults as Celerity, except that nothing draws until the
+            // user enables the target class explicitly.
+            enabled: false,
+            r#box: false,
+            corner_length: 0.25,
+            name: false,
+            weapon: false,
+            weapon_type: esp_bits::WEAPON_TEXT,
+            health_bar: false,
+            health_type: esp_bits::BAR | esp_bits::GRADIENT | esp_bits::TEXT,
+            skeleton: false,
+            ammo: false,
+            ammo_type: esp_bits::BAR | esp_bits::GRADIENT | esp_bits::TEXT,
+            flags: false,
+            flags_type: 0,
+            box_color: [255, 255, 255, 255],
+            name_color: [255, 255, 255, 255],
+            weapon_color: [255, 255, 255, 255],
+            health_low_color: [255, 102, 170, 255],
+            health_high_color: [255, 255, 255, 255],
+            skeleton_color: [255, 255, 255, 255],
+            ammo_low_color: [255, 102, 102, 255],
+            ammo_high_color: [102, 204, 255, 255],
+            flags_color: [255, 255, 255, 255],
+        }
+    }
+}
+
 /// Player ESP overlays.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EspSettings {
     pub enabled: bool,
+    /// Celerity-style per-target configs driving the world overlay.
+    pub enemies: EspPlayerSettings,
+    pub teammates: EspPlayerSettings,
     /// Serialized as the JSON key `box` (`box` is a Rust keyword).
     #[serde(rename = "box")]
     pub r#box: bool,
@@ -890,9 +1004,13 @@ pub struct EspSettings {
     pub health_bar: bool,
     /// 0 above box, 1 left, 2 right.
     pub health_pos: usize,
+    pub health_full_color: Rgba,
+    pub health_low_color: Rgba,
     pub name_color: Rgba,
     pub armor_color: Rgba,
     pub distance_color: Rgba,
+    /// Ammo bar colour (the bar is drawn right of the box).
+    pub ammo_color: Rgba,
     /// Use the optional Panorama engine model instead of the built-in skinned render.
     pub preview_engine: bool,
     /// Show raw preview state values in the preview panel.
@@ -903,6 +1021,8 @@ impl Default for EspSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            enemies: EspPlayerSettings::default(),
+            teammates: EspPlayerSettings::default(),
             r#box: false,
             skeleton: false,
             name: false,
@@ -920,9 +1040,12 @@ impl Default for EspSettings {
             skeleton_occluded_color: [255, 112, 104, 225],
             health_bar: true,
             health_pos: 0,
+            health_full_color: [110, 228, 145, 255],
+            health_low_color: [235, 85, 85, 255],
             name_color: [255, 142, 128, 255],
             armor_color: [164, 204, 232, 255],
             distance_color: [190, 194, 202, 255],
+            ammo_color: [190, 194, 202, 255],
             preview_engine: false,
             preview_debug: false,
         }
@@ -958,6 +1081,8 @@ impl Default for MotionBlurSettings {
 #[serde(default)]
 pub struct MiscSettings {
     pub watermark: bool,
+    /// Reveal all enemies on the radar (writes m_bSpotted + mask; needs allow_writes).
+    pub reveal_radar: bool,
     pub bhop: bool,
     pub autostrafe: bool,
     /// Разрешает запись в игру (движение/углы/кнопки). По умолчанию выключено.
@@ -977,6 +1102,7 @@ impl Default for MiscSettings {
     fn default() -> Self {
         Self {
             watermark: false,
+            reveal_radar: false,
             bhop: false,
             autostrafe: false,
             allow_writes: false,

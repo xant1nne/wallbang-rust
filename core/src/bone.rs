@@ -5,6 +5,58 @@ use crate::{math::Mat3x4, memory};
 use wallbang_config::constants::BONE_STRIDE;
 use wallbang_config::offsets::{MODEL_STATE_BONE_ARRAY, PAWN_SCENE_NODE, SCENE_NODE_MODEL_STATE};
 
+/// CS2 player skeleton indices, 1:1 with the verified C++ reference
+/// (`utilities/cstypes.hpp` → `cstypes::bone_ids`). All player/agent models in
+/// CS2 share this layout, so skeleton drawing never has to call the slow game
+/// `GetBonePositionByName` resolver (that call takes an engine lock and cost
+/// ~1 ms per bone in the first playtest).
+pub mod ids {
+    pub const PELVIS: usize = 1;
+    /// CS2 names them spine_0..spine_3; the reference numbers them 1..4 because
+    /// it starts counting after `spine_0`.
+    pub const SPINE_0: usize = 2;
+    pub const SPINE_1: usize = 3;
+    pub const SPINE_2: usize = 4;
+    pub const NECK: usize = 6;
+    pub const HEAD: usize = 7;
+    pub const LEFT_SHOULDER: usize = 9;
+    pub const LEFT_ELBOW: usize = 10;
+    pub const LEFT_HAND: usize = 11;
+    pub const RIGHT_SHOULDER: usize = 13;
+    pub const RIGHT_ELBOW: usize = 14;
+    pub const RIGHT_HAND: usize = 15;
+    pub const LEFT_HIP: usize = 17;
+    pub const LEFT_KNEE: usize = 18;
+    pub const LEFT_FOOT: usize = 19;
+    pub const RIGHT_HIP: usize = 20;
+    pub const RIGHT_KNEE: usize = 21;
+    pub const RIGHT_FOOT: usize = 22;
+    /// spine_3 in CS2 naming lives at index 23 (after both arms).
+    pub const SPINE_3: usize = 23;
+}
+
+/// Skeleton segments, 1:1 with Celerity `draw_skeleton` bone pairs.
+pub const SKELETON_PAIRS: [(usize, usize); 18] = [
+    (ids::HEAD, ids::NECK),
+    (ids::NECK, ids::SPINE_3),
+    (ids::SPINE_3, ids::SPINE_2),
+    (ids::SPINE_2, ids::SPINE_1),
+    (ids::SPINE_1, ids::SPINE_0),
+    (ids::SPINE_0, ids::PELVIS),
+    (ids::SPINE_3, ids::LEFT_SHOULDER),
+    (ids::LEFT_SHOULDER, ids::LEFT_ELBOW),
+    (ids::LEFT_ELBOW, ids::LEFT_HAND),
+    (ids::SPINE_3, ids::RIGHT_SHOULDER),
+    (ids::RIGHT_SHOULDER, ids::RIGHT_ELBOW),
+    (ids::RIGHT_ELBOW, ids::RIGHT_HAND),
+    (ids::PELVIS, ids::LEFT_HIP),
+    (ids::LEFT_HIP, ids::LEFT_KNEE),
+    (ids::LEFT_KNEE, ids::LEFT_FOOT),
+    (ids::PELVIS, ids::RIGHT_HIP),
+    (ids::RIGHT_HIP, ids::RIGHT_KNEE),
+    (ids::RIGHT_KNEE, ids::RIGHT_FOOT),
+];
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BoneArray {
     base: usize,

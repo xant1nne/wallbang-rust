@@ -8,7 +8,7 @@ use crate::{
 };
 use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use wallbang_config::{offsets::{self, DW_VIEW_MATRIX}, Settings};
@@ -23,6 +23,32 @@ const NAME_CACHE_CAPACITY: usize = 128;
 
 static TRACE: Mutex<Option<fn(&str)>> = Mutex::new(None);
 static TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Logged once when the build guard blocks a snapshot read.
+static BUILD_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// Game swapchain backbuffer size, written by the Present hook every frame.
+/// ESP must project with the same dimensions the frame is drawn at:
+/// `GetSystemMetrics` returns the desktop size and desyncs the projection on
+/// any non-native render resolution (that is what made the overlay look
+/// "external" in the first playtest).
+static VIEWPORT_W: AtomicU32 = AtomicU32::new(0);
+static VIEWPORT_H: AtomicU32 = AtomicU32::new(0);
+
+/// Called from `render::hooks` once the swapchain size is known.
+pub fn set_viewport(width: u32, height: u32) {
+    VIEWPORT_W.store(width, Ordering::Relaxed);
+    VIEWPORT_H.store(height, Ordering::Relaxed);
+}
+
+fn viewport() -> (f32, f32) {
+    let width = VIEWPORT_W.load(Ordering::Relaxed);
+    let height = VIEWPORT_H.load(Ordering::Relaxed);
+    if width > 0 && height > 0 {
+        (width as f32, height as f32)
+    } else {
+        modules::screen_size()
+    }
+}
 
 // Diagnostic counters for the Present-hook FPS investigation.
 static PROF_CALLS: AtomicU32 = AtomicU32::new(0);
@@ -66,12 +92,20 @@ pub struct PlayerSnapshot {
     pub armor: i32,
     pub team: i32,
     pub spotted: bool,
+    pub scoped: bool,
     pub alive: bool,
     pub origin: Vec3,
+    /// Engine collision AABB in world space (crouch/jump already applied).
+    pub bounds_min: Vec3,
+    pub bounds_max: Vec3,
     pub velocity: Vec3,
     pub enemy: bool,
     /// Sanitized `m_sSanitizedPlayerName`; `None` until the controller spawns.
     pub name: Option<Arc<str>>,
+    /// `m_iAccount` from the controller's money services.
+    pub money: i32,
+    pub helmet: bool,
+    pub has_c4: bool,
     pub weapon: WeaponFields,
 }
 
@@ -174,6 +208,18 @@ impl GameState {
 
     /// Read-only snapshot, вызывается из тик-лупа и Present-хука.
     pub fn refresh(&self) {
+        // Build guard: офсеты сняты под конкретный engine build. На другом
+        // билде ни entity layout, ни dw* не валидны — читать память нельзя.
+        if !matches!(modules::build_supported(), Some(true)) {
+            if !BUILD_WARNED.swap(true, Ordering::Relaxed) {
+                trace(&format!(
+                    "refresh: build guard blocked snapshot (actual={:?}, expected={})",
+                    modules::build_number(),
+                    offsets::EXPECTED_BUILD_NUMBER
+                ));
+            }
+            return;
+        }
         if !offsets::is_resolved() {
             trace("refresh: offsets not resolved");
             return;
@@ -186,8 +232,26 @@ impl GameState {
             }
         };
         let mut snap = Snapshot::default();
-        snap.screen_w = modules::screen_size().0;
-        snap.screen_h = modules::screen_size().1;
+        let (screen_w, screen_h) = viewport();
+        snap.screen_w = screen_w;
+        snap.screen_h = screen_h;
+        // ESP-only reads are gated: names, weapon display strings, money, helmet
+        // and the C4 inventory walk cost validation syscalls per player, so they
+        // only run when the overlay actually needs them (that gating is part of
+        // the refresh budget: an unfiltered refresh hit 45 ms in the playtest).
+        let (want_name, want_weapon_name, want_money, want_armor, want_bomb) = {
+            use wallbang_config::settings::{esp_bits, has_flag};
+            let settings = self.settings();
+            let esp = &settings.esp;
+            let flags = esp.enemies.flags_type | esp.teammates.flags_type;
+            (
+                esp.enemies.name || esp.teammates.name,
+                esp.enemies.weapon || esp.teammates.weapon,
+                esp.enabled && has_flag(flags, esp_bits::FLAG_CASH),
+                esp.enabled && has_flag(flags, esp_bits::FLAG_ARMOR),
+                esp.enabled && has_flag(flags, esp_bits::FLAG_BOMB),
+            )
+        };
 
         unsafe {
             if let Some(matrix) = crate::memory::read::<Mat4>(client + DW_VIEW_MATRIX) {
@@ -224,14 +288,65 @@ impl GameState {
                     armor: fields.armor,
                     team: fields.team,
                     spotted: fields.spotted,
+                    scoped: fields.scoped,
                     alive: true,
                     origin: fields.origin,
+                    bounds_min: if fields.bounds_max.z > fields.bounds_min.z {
+                        fields.bounds_min
+                    } else {
+                        // Collision property not streamed in yet: fall back to a
+                        // standing capsule on top of the abs origin (origin is
+                        // at the feet, so the box grows upward only).
+                        Vec3::new(
+                            fields.origin.x - 16.0,
+                            fields.origin.y - 16.0,
+                            fields.origin.z,
+                        )
+                    },
+                    bounds_max: if fields.bounds_max.z > fields.bounds_min.z {
+                        fields.bounds_max
+                    } else {
+                        Vec3::new(
+                            fields.origin.x + 16.0,
+                            fields.origin.y + 16.0,
+                            fields.origin.z + 72.0,
+                        )
+                    },
                     velocity: fields.velocity,
                     enemy: fields.team != snap.local_team,
-                    name: self.resolve_name(instance),
-                    weapon: Pawn::new(instance).weapon().unwrap_or_default(),
+                    name: if want_name {
+                        self.resolve_name(instance)
+                    } else {
+                        None
+                    },
+                    money: if want_money {
+                        Pawn::new(instance).money().unwrap_or(0)
+                    } else {
+                        0
+                    },
+                    helmet: if want_armor {
+                        Pawn::new(instance)
+                            .item_services()
+                            .map(|(helmet, _)| helmet)
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    },
+                    has_c4: want_bomb && Pawn::new(instance).has_c4(),
+                    weapon: Pawn::new(instance)
+                        .weapon(want_weapon_name)
+                        .unwrap_or_default(),
                 });
             }
+            // Far-to-near: nearer boxes are painted last, on top of the further
+            // ones (same order as the C++ overlay).
+            let local_origin = snap.local_origin;
+            snap.players.sort_by(|a, b| {
+                b.origin
+                    .distance_to(local_origin)
+                    .partial_cmp(&a.origin.distance_to(local_origin))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
             PROF_PAWN_US.fetch_add(t.elapsed().as_micros() as u64, Ordering::Relaxed);
             PROF_PLAYERS.fetch_add(snap.players.len() as u64, Ordering::Relaxed);
         }

@@ -1,4 +1,4 @@
-﻿// Config block: vtable-слоты задаются вызывающим (Present=8, Present1=22, ResizeBuffers=13/39).
+// Config block: vtable-слоты задаются вызывающим (Present=8, Present1=22, ResizeBuffers=13/39).
 // PrologueHook ворует ровно `expected.len()` байт пролога и проверяет их перед патчем.
 use crate::memory;
 use std::ffi::c_void;
@@ -75,6 +75,47 @@ impl VTableHook {
     #[inline]
     pub fn original(&self) -> usize {
         self.original
+    }
+
+    /// Патчит конкретный слот по его адресу (когда vtable-инстанс не нужен):
+    /// поиск указателя на функцию в образе модуля даёт адрес слота напрямую.
+    pub unsafe fn install_slot(slot: usize, detour: usize) -> Option<Self> {
+        if slot == 0 || detour == 0 {
+            return None;
+        }
+        let original = memory::read_ptr(slot)?;
+        let mut old_protect = 0u32;
+        if VirtualProtect(
+            slot as *mut c_void,
+            std::mem::size_of::<usize>(),
+            PAGE_EXECUTE_READWRITE,
+            &mut old_protect,
+        ) == 0
+        {
+            return None;
+        }
+        if !memory::write(slot, detour) {
+            VirtualProtect(
+                slot as *mut c_void,
+                std::mem::size_of::<usize>(),
+                old_protect,
+                &mut old_protect,
+            );
+            return None;
+        }
+        VirtualProtect(
+            slot as *mut c_void,
+            std::mem::size_of::<usize>(),
+            old_protect,
+            &mut old_protect,
+        );
+        // vtable == slot, index 0 => restore() пишет обратно ровно этот слот.
+        Some(Self {
+            vtable: slot,
+            index: 0,
+            original,
+            detour,
+        })
     }
 
     #[inline]

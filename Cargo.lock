@@ -525,6 +525,7 @@ name = "wallbang_loader"
 version = "0.1.0"
 dependencies = [
  "wallbang_config",
+ "wallbang_render",
  "windows",
 ]
 

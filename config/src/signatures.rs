@@ -42,13 +42,42 @@ pub const SIG_CMD_SERIALIZE: &str = "48 89 5C 24 18 55 56 57 48 81 EC 90";
 /// Это тот же самый адрес, что давал asphyxia-паттерн SetMessageData `... 48 83 EC 30 49`
 /// (у него было 5 кандидатов). Уточнённый паттерн с `49 8B C0` даёт ровно одно совпадение.
 pub const SIG_CMD_SET_MESSAGE_DATA: &str = "48 89 5C 24 20 55 56 57 48 83 EC 30 49 8B C0";
-/// TODO_SIG: как подтвердить — см. IDA-скрипт в tools. asphyxia-паттерн на локальном билде
-/// даёт 0 совпадений; пересчёт CRC пока не включаем (все мутации по умолчанию выключены).
-pub const SIG_CMD_WRITE_MESSAGE: &str =
-    "48 89 5C 24 10 48 89 6C 24 18 48 89 7C 24 20 41 56 48 83 EC 20 48 BF";
+/// client.dll, UNIQUE (RVA 0x1483F0): string_copy — копирует собранный proto-буфер
+/// в 64-байтный msg перед SerializeMoveCrc. Подтверждено оффлайн 25.11.2026 на
+/// установленном client.dll: call-сайт `E8 ? ? ? ? 0F 10 45 88` (RVA 0x1403713)
+/// ведёт ровно сюда, прямой пролог даёт одно совпадение. Прежний паттерн
+/// `... 48 89 7C 24 20 41 56 ... 48 BF` давал 0 совпадений: в этом билде
+/// сохраняются rsi/`48 BE`, а не rdi/`48 BF`.
+/// Отдельной функции `WriteMessage` для пересчёта CRC нет: путь CRC — этот
+/// копировщик плюс SIG_CMD_SET_MESSAGE_DATA.
+pub const SIG_CMD_STRING_COPY: &str =
+    "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 41 56 48 83 EC 20 48 BE";
+/// client.dll, UNIQUE (RVA 0x1403713): call-сайт string_copy внутри CRC-функции.
+/// `rip`-режим sigscan с disp+1 даёт target 0x1483F0; fallback, если пролог выше
+/// перестал совпадать после апдейта.
+pub const SIG_CMD_STRING_COPY_CALL: &str = "E8 ? ? ? ? 0F 10 45 88";
+/// Смещение disp32 внутри SIG_CMD_STRING_COPY_CALL (байты 1..5).
+pub const SIG_CMD_STRING_COPY_DISP: usize = 1;
 /// panorama.dll: CUIEngine::RunScript (из Osiris, Windows x64).
 pub const SIG_PANORAMA_RUN_SCRIPT: &str =
     "4C 89 4C 24 ? 4C 89 44 24 ? 48 89 54 24 ? 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24";
+/// client.dll, UNIQUE (RVA 0x952BE0): C_CSPlayerPawn::GetBonePositionByName.
+/// `int(wchar? no) f(pawn, const char* name)` — returns the bone index for a
+/// Source 2 bone name ("head_0", "spine_3", ...). Проверено tools/sigscan на
+/// локальном client.dll: одно совпадение.
+pub const SIG_GET_BONE_POSITION_BY_NAME: &str =
+    "40 53 48 83 EC ? 48 8B 89 ? ? ? ? 48 8B DA 48 8B 01 FF 50 ? 48 8B C8";
+/// client.dll: trace API (Celerity `world_trace.hpp`). Все пять паттернов
+/// проверены tools/sigscan на установленном client.dll — по одному совпадению.
+pub const SIG_TRACE_INIT_DATA: &str =
+    "48 89 5C 24 ? 48 89 74 24 ? 57 48 83 EC ? 48 8D 79 ? 33 F6 C7 47";
+pub const SIG_TRACE_INIT_INFO: &str = "40 55 41 55 41 57 48 83 EC 30";
+pub const SIG_TRACE_INIT_FILTER: &str =
+    "48 89 5C 24 ? 48 89 74 24 ? 57 48 83 EC ? 0F B6 41 ? 33 FF 24";
+pub const SIG_TRACE_CREATE: &str =
+    "48 89 5C 24 ? 48 89 6C 24 ? 48 89 74 24 ? 57 41 56 41 57 48 83 EC ? F2 0F 10 02 4D 8D 71 08";
+pub const SIG_TRACE_GET_INFO: &str =
+    "48 89 5C 24 ? 48 89 6C 24 ? 48 89 74 24 ? 57 48 81 EC ? ? ? ? 48 8B E9 0F 29 74 24";
 /// client.dll: HUD root (Panorama-инъекция). RIP-relative disp32 на +3.
 /// Проверено tools/sigscan: match 0xD5495B -> глобал 0x25CF6C8.
 pub const SIG_HUD: &str = "48 8B 05 ? ? ? ? 48 85 C0 74 71";
@@ -74,5 +103,5 @@ pub const IDA_PRO_PATH: &str = r"C:\Users\dmitr\Downloads\AyuGram Desktop\IDA Pr
 
 #[inline]
 pub fn missing() -> &'static [&'static str] {
-    &["SIG_CMD_WRITE_MESSAGE"]
+    &[]
 }

@@ -1,11 +1,9 @@
 // Config block: VK_SPACE=0x20; LEGIT_MIN_STEP=0.02; вся запись — только под MutationGuard.
-use wallbang_core::input::key_down;
 use wallbang_core::math::{angle_diff, angle_to, QAngle};
 use wallbang_core::mutation;
 use wallbang_core::state::GameState;
-use wallbang_core::usercmd::{UserCmd, FL_ONGROUND, IN_ATTACK, IN_JUMP};
+use wallbang_core::usercmd::{UserCmd, IN_ATTACK};
 
-const VK_SPACE: u16 = 0x20;
 const LEGIT_MIN_STEP: f32 = 0.02;
 
 /// Вызывается из detour'а CCSGOInput::CreateMove (игровой поток).
@@ -17,18 +15,10 @@ pub fn on_create_move(cmd: UserCmd, state: &GameState) {
         return;
     };
 
+    // Movement: порт Celerity (bhop/autostrafe/mini_jump/edgejump/jumpbug).
+    crate::movement::on_create_move(cmd, state);
+
     let settings = state.settings().clone();
-    let flags = UserCmd::local_flags();
-    let on_ground = flags & FL_ONGROUND != 0;
-
-    if settings.misc.bhop && on_ground && key_down(VK_SPACE) {
-        cmd.add_buttons(IN_JUMP);
-    }
-    if settings.misc.autostrafe && !on_ground {
-        let side = if cmd.mouse_dx() > 0 { -1.0 } else { 1.0 };
-        cmd.set_side_move(side);
-    }
-
     if !settings.combat.ragebot.enabled && !settings.combat.legit.enabled {
         return;
     }

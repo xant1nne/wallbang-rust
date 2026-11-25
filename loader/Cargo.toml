@@ -6,9 +6,11 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 
+# The GUI loader is the only binary. The DLL is always embedded into it at build
+# time (build.bat builds the DLL first); there is no on-disk DLL variant anymore.
 [[bin]]
-name = "wallbang_loader"
-path = "src/main.rs"
+name = "wallbang_gui"
+path = "src/bin/wallbang_gui.rs"
 
 [dependencies]
 windows = { workspace = true, features = [
@@ -18,3 +20,4 @@ windows = { workspace = true, features = [
     "Win32_System_WindowsProgramming",
 ] }
 wallbang_config = { workspace = true }
+wallbang_render = { workspace = true }

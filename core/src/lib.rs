@@ -13,7 +13,9 @@ pub mod pawn;
 pub mod state;
 pub mod threading;
 pub mod tick;
+pub mod trace;
 pub mod usercmd;
+pub mod weapons;
 
 use std::sync::{Arc, OnceLock};
 use state::GameState;

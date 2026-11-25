@@ -6,7 +6,7 @@ use crate::dx11::Dx11;
 use crate::menu::Menu;
 use parking_lot::Mutex;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicI32, AtomicIsize, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 use wallbang_core::hooks::VTableHook;
 use windows::core::Interface;
 use windows::Win32::Graphics::Direct3D11::{
@@ -33,6 +33,23 @@ extern "system" {
     fn GetModuleHandleA(name: *const std::ffi::c_char) -> *mut c_void;
     fn GetTickCount64() -> u64;
 }
+
+#[link(name = "user32")]
+extern "system" {
+    fn ShowCursor(show: i32) -> i32;
+    fn ClipCursor(rect: *const c_void) -> i32;
+    fn GetCursorInfo(info: *mut CursorInfo) -> i32;
+}
+
+#[repr(C)]
+struct CursorInfo {
+    size: u32,
+    flags: u32,
+    cursor: *mut c_void,
+    position: [i32; 2],
+}
+
+const CURSOR_SHOWING: u32 = 0x0000_0001;
 
 const PRESENT_SLOT: usize = 8;
 
@@ -97,12 +114,16 @@ unsafe extern "system" fn hk_wndproc(
     lparam: LPARAM,
 ) -> LRESULT {
     const WM_MOUSEWHEEL: u32 = 0x020A;
+    const WM_INPUT: u32 = 0x00FF;
     if msg == WM_MOUSEWHEEL {
         let delta = ((wparam.0 >> 16) as u16) as i16 as i32;
         WHEEL_DELTA.fetch_add(delta, Ordering::Relaxed);
     }
-    // While the menu is open the game must not see mouse input at all.
-    if crate::menu::is_menu_open() && (0x0200..=0x020E).contains(&msg) {
+    // While the menu is open the game must not see mouse input at all. Raw input
+    // arrives as WM_INPUT, so blocking only WM_MOUSEMOVE left the camera turning.
+    if crate::menu::is_menu_open()
+        && (msg == WM_INPUT || (0x0200..=0x0210).contains(&msg))
+    {
         return LRESULT(0);
     }
     let old = WNDPROC_ORIG.load(Ordering::Relaxed);
@@ -112,6 +133,40 @@ unsafe extern "system" fn hk_wndproc(
         CallWindowProcW(Some(proc), hwnd, msg, wparam, lparam)
     } else {
         DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
+}
+
+/// On menu open: release the game cursor clip and make the OS cursor visible.
+/// On close: hide it again so the game returns to its raw-input look.
+pub fn update_menu_cursor(open: bool) {
+    static MENU_CURSOR: AtomicBool = AtomicBool::new(false);
+    if MENU_CURSOR.swap(open, Ordering::Relaxed) == open {
+        return;
+    }
+    unsafe {
+        if open {
+            enforce_menu_cursor();
+        } else {
+            while ShowCursor(0) >= 0 {}
+        }
+    }
+}
+
+/// Must run every frame while the menu is open: the game re-applies
+/// `ClipCursor(RECT)` and hides the cursor from its own CreateMove/input code,
+/// so a one-shot release is not enough to keep the menu usable.
+pub fn enforce_menu_cursor() {
+    unsafe {
+        ClipCursor(std::ptr::null());
+        let mut info = CursorInfo {
+            size: std::mem::size_of::<CursorInfo>() as u32,
+            flags: 0,
+            cursor: std::ptr::null_mut(),
+            position: [0, 0],
+        };
+        if GetCursorInfo(&mut info) != 0 && info.flags & CURSOR_SHOWING == 0 {
+            while ShowCursor(1) < 0 {}
+        }
     }
 }
 
@@ -248,6 +303,10 @@ unsafe extern "system" fn hk_present(swapchain: *mut c_void, sync: u32, flags: u
                 }
                 let (w, h) = (renderer.width as f32, renderer.height as f32);
                 let state = wallbang_core::state();
+                // Проекция ESP обязана идти по размеру backbuffer'а, а не по
+                // размеру рабочего стола: GetSystemMetrics даёт desktop, и при
+                // неродном разрешении/растяжке кадр «уезжает».
+                wallbang_core::state::set_viewport(renderer.width, renderer.height);
                 // Снимок мира не обязан обновляться на каждый Present: при 300+ FPS
                 // это лишний проход по entity list и лишние локи.
                 let now = GetTickCount64();

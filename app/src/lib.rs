@@ -8,7 +8,6 @@ use std::sync::OnceLock;
 use wallbang_config::constants::DEFAULT_PROFILE;
 use wallbang_config::storage::{default_dir, Storage};
 use wallbang_core::hooks::{parse_prefix, PrologueHook, VTableHook};
-use wallbang_core::usercmd::UserCmd;
 use wallbang_lua::Runtime;
 
 const DLL_PROCESS_ATTACH: u32 = 1;
@@ -21,10 +20,15 @@ static CREATE_MOVE: Mutex<Option<PrologueHook>> = Mutex::new(None);
 static CREATE_MOVE_TRAMPOLINE: AtomicUsize = AtomicUsize::new(0);
 static FRAME_STAGE: Mutex<Option<VTableHook>> = Mutex::new(None);
 static FRAME_STAGE_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+static ENABLE_CURSOR_HOOK: Mutex<Option<VTableHook>> = Mutex::new(None);
+static ENABLE_CURSOR_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+/// i_input_system::EnableCursor — Celerity hooks the same slot (vmt index 76).
+const ENABLE_CURSOR_VFUNC: usize = 76;
 static FRAMES: AtomicU32 = AtomicU32::new(0);
 
-type CreateMoveFn = unsafe extern "system" fn(*mut c_void, u32, *mut c_void) -> f64;
+type CreateMoveFn = unsafe extern "system" fn(*mut c_void, u32, bool) -> f64;
 type FrameStageNotifyFn = unsafe extern "C" fn(usize, i32);
+type EnableCursorFn = unsafe extern "system" fn(*mut c_void, bool) -> *mut c_void;
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -41,18 +45,67 @@ unsafe extern "system" fn deferred_init(_: *mut c_void) -> u32 {
     0
 }
 
-/// Detour CCSGOInput::CreateMove: сначала оригинал (игра заполняет cmd), потом фичи.
-unsafe extern "system" fn hk_create_move(this: *mut c_void, slot: u32, cmd: *mut c_void) -> f64 {
+/// Detour CCSGOInput::CreateMove. NOTE: третьим аргументом идёт `bool active`,
+/// а не CUserCmd* (как в Celerity). Пока здесь только диагностика: сам UserCmd
+/// захватывается отдельным хуком AutoMakeUserCmd (см. TODO ниже).
+unsafe extern "system" fn hk_create_move(this: *mut c_void, slot: u32, active: bool) -> f64 {
     let trampoline = CREATE_MOVE_TRAMPOLINE.load(Ordering::Relaxed);
     if trampoline == 0 {
         return 0.0;
     }
     let original: CreateMoveFn = std::mem::transmute(trampoline);
-    let result = original(this, slot, cmd);
-    if let Some(cmd) = UserCmd::from_raw(cmd as usize) {
-        wallbang_feature::combat::cmd::on_create_move(cmd, &wallbang_core::state());
+    let result = original(this, slot, active);
+    static CM_LOGS: AtomicUsize = AtomicUsize::new(0);
+    if CM_LOGS.fetch_add(1, Ordering::Relaxed) < 3 {
+        let settings = wallbang_core::state().settings().clone();
+        diag::log(&format!(
+            "CreateMove: input=0x{:X} slot={} active={} allow_writes={} bhop={} autostrafe={} jumpbug={} edgejump={}",
+            this as usize,
+            slot,
+            active as usize,
+            settings.misc.allow_writes,
+            settings.misc.bhop,
+            settings.misc.autostrafe,
+            settings.misc.movement.jumpbug,
+            settings.misc.movement.edgejump,
+        ));
     }
     result
+}
+
+/// i_input_system vfunc 76 (EnableCursor): force the cursor enabled while the
+/// menu is open. This is what actually restores the OS cursor in game — Win32
+/// ShowCursor alone loses the fight because the engine disables it every frame.
+unsafe extern "system" fn hk_enable_cursor(this: *mut c_void, active: bool) -> *mut c_void {
+    let original = ENABLE_CURSOR_ORIGINAL.load(Ordering::Relaxed);
+    if original == 0 {
+        return std::ptr::null_mut();
+    }
+    let original: EnableCursorFn = std::mem::transmute(original);
+    if wallbang_render::is_menu_open() {
+        return original(this, true);
+    }
+    original(this, active)
+}
+
+fn install_enable_cursor() {
+    let Some(instance) = wallbang_core::modules::input_system() else {
+        diag::log("EnableCursor: input system not resolved");
+        return;
+    };
+    let Some(hook) = (unsafe {
+        VTableHook::install(instance, ENABLE_CURSOR_VFUNC, hk_enable_cursor as *const () as usize)
+    }) else {
+        diag::log("EnableCursor: vtable hook failed");
+        return;
+    };
+    diag::log(&format!(
+        "EnableCursor: hooked vfunc={} original=0x{:X}",
+        ENABLE_CURSOR_VFUNC,
+        hook.original()
+    ));
+    ENABLE_CURSOR_ORIGINAL.store(hook.original(), Ordering::SeqCst);
+    *ENABLE_CURSOR_HOOK.lock() = Some(hook);
 }
 
 /// Panorama-скрипт отправляется из UI-потока: stage 6 в матче, любой stage в меню.
@@ -106,8 +159,7 @@ fn install_frame_stage_notify() {
 }
 
 /// Ставит inline-хук по сигнатуре; если байты пролога не совпали — тихо пропускает.
-fn install_create_move() {
-    let Some(address) = wallbang_core::pattern::scan_module(
+fn install_create_move() {    let Some(address) = wallbang_core::pattern::scan_module(
         "client.dll",
         wallbang_config::signatures::SIG_CREATE_MOVE,
     ) else {
@@ -139,7 +191,8 @@ fn log_signatures() {
         ("SIG_WORLD_SPACE_BONES", sig::SIG_WORLD_SPACE_BONES),
         ("SIG_CMD_SERIALIZE", sig::SIG_CMD_SERIALIZE),
         ("SIG_CMD_SET_MESSAGE_DATA", sig::SIG_CMD_SET_MESSAGE_DATA),
-        ("SIG_CMD_WRITE_MESSAGE", sig::SIG_CMD_WRITE_MESSAGE),
+        ("SIG_CMD_STRING_COPY", sig::SIG_CMD_STRING_COPY),
+        ("SIG_CMD_STRING_COPY_CALL", sig::SIG_CMD_STRING_COPY_CALL),
         ("SIG_FRAME_STAGE_NOTIFY", sig::SIG_FRAME_STAGE_NOTIFY),
         ("SIG_OVERRIDE_VIEW", sig::SIG_OVERRIDE_VIEW),
         ("SIG_INPUT_SYSTEM_SVC", sig::SIG_INPUT_SYSTEM_SVC),
@@ -204,6 +257,18 @@ pub fn initialize() -> Result<(), String> {
         wallbang_core::modules::input_system().unwrap_or(0),
         wallbang_core::modules::csgo_input().unwrap_or(0),
     ));
+    match wallbang_core::modules::build_supported() {
+        Some(true) => diag::log(&format!(
+            "build guard: ok, build {} matches expected {}",
+            wallbang_core::modules::build_number().unwrap_or(0),
+            wallbang_config::offsets::EXPECTED_BUILD_NUMBER
+        )),
+        _ => diag::log(&format!(
+            "build guard: BLOCKED actual={:?} expected={} — snapshot reads disabled until offsets are updated",
+            wallbang_core::modules::build_number(),
+            wallbang_config::offsets::EXPECTED_BUILD_NUMBER
+        )),
+    }
     log_signatures();
     load_startup_profile();
 
@@ -215,6 +280,8 @@ pub fn initialize() -> Result<(), String> {
     diag::log("render init: ok (overlay thread started)");
     wallbang_render::native_preview::init();
     install_frame_stage_notify();
+    install_enable_cursor();
+
     wallbang_render::set_overlay(wallbang_feature::draw_esp);
     wallbang_render::set_frame_callback(on_frame);
     install_create_move();
@@ -311,6 +378,8 @@ fn on_frame() {
     // Пользовательский тумблер "allow writes" в Misc -> MutationGuard.
     let allowed = wallbang_core::state().settings().misc.allow_writes;
     wallbang_core::mutation::set_allowed(allowed);
+    // Client-side visuals that only need entity writes (radar reveal).
+    wallbang_feature::visuals::on_frame(&wallbang_core::state());
     if let Some(runtime) = LUA.lock().as_ref() {
         let _ = runtime.fire("render", &[]);
     }

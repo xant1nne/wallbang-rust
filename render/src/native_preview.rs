@@ -77,7 +77,7 @@ const SCRIPT: &str = r#"
             var cfg = state.espConfig;
             if (!cfg.enabled || typeof panel.GetBonePositionInPanelSpace !== 'function') return;
             panel.SetActiveCharacter(5);
-            var names = ['pelvis', 'spine_1', 'spine_2', 'spine_3', 'neck_0', 'head_0',
+            var names = ['pelvis', 'spine_0', 'spine_1', 'spine_2', 'spine_3', 'neck_0', 'head_0',
                          'arm_upper_L', 'arm_lower_L', 'hand_L', 'arm_upper_R', 'arm_lower_R', 'hand_R',
                          'leg_upper_L', 'leg_lower_L', 'ankle_L', 'leg_upper_R', 'leg_lower_R', 'ankle_R'];
             var bones = {}, points = [];
@@ -90,54 +90,89 @@ const SCRIPT: &str = r#"
             }
             state.bones = points.length;
             if (!bones.head_0 || !bones.pelvis || (!bones.ankle_L && !bones.ankle_R)) return;
-            var neck = bones.neck_0, head = bones.head_0;
-            var pad = Math.max(3, neck ? Math.abs(neck.y - head.y) * 0.65 : 3);
             var left = state.width, right = 0, top = state.height, bottom = 0;
             for (var i = 0; i < points.length; ++i) {
                 left = Math.min(left, points[i].x); right = Math.max(right, points[i].x);
                 top = Math.min(top, points[i].y); bottom = Math.max(bottom, points[i].y);
             }
-            left = Math.max(state.marginX, left - pad); right = Math.min(state.width - 2, right + pad);
-            top = Math.max(Math.max(14, state.marginY), top - pad); bottom = Math.min(state.height - 32, bottom + pad);
+            left = Math.max(state.marginX, left); right = Math.min(state.width - 2, right);
+            top = Math.max(Math.max(14, state.marginY), top); bottom = Math.min(state.height - 32, bottom);
             if (right <= left || bottom <= top) return;
-            var box = cfg.box || {}, skel = cfg.skeleton || {};
+            // Celerity box: height from feet to head, width = height * 0.5,
+            // horizontally centred on the model.
+            var boxH = bottom - top;
+            var boxW = boxH * 0.5;
+            var cx = (left + right) * 0.5;
+            var x1 = Math.max(2, cx - boxW * 0.5), x2 = Math.min(state.width - 2, cx + boxW * 0.5);
+            var y1 = top, y2 = bottom;
+            var w = x2 - x1, h = y2 - y1;
+            var box = cfg.box || {};
             if (box.on) {
-                var len = Math.max(2, Math.min(box.corner || 10, (right - left) * 0.5, (bottom - top) * 0.5));
-                var lines = [[left, top, left + len, top], [left, top, left, top + len],
-                             [right, top, right - len, top], [right, top, right, top + len],
-                             [left, bottom, left + len, bottom], [left, bottom, left, bottom - len],
-                             [right, bottom, right - len, bottom], [right, bottom, right, bottom - len]];
-                for (var i = 0; i < lines.length; ++i) {
-                    var l = lines[i];
-                    state.line('box' + i, { x: l[0], y: l[1] }, { x: l[2], y: l[3] }, box.color, 1.4);
+                var frac = Math.max(0.005, Math.min(0.5, box.corner || 0.25));
+                if (frac >= 0.5) {
+                    state.line('boxT', { x: x1 - 1, y: y1 - 1 }, { x: x2 + 1, y: y1 - 1 }, 'rgba(0,0,0,0.7)', 1);
+                    state.line('boxB', { x: x1 - 1, y: y2 + 1 }, { x: x2 + 1, y: y2 + 1 }, 'rgba(0,0,0,0.7)', 1);
+                    state.line('boxL', { x: x1 - 1, y: y1 }, { x: x1 - 1, y: y2 }, 'rgba(0,0,0,0.7)', 1);
+                    state.line('boxR', { x: x2 + 1, y: y1 }, { x: x2 + 1, y: y2 }, 'rgba(0,0,0,0.7)', 1);
+                    state.line('boxT2', { x: x1, y: y1 }, { x: x2, y: y1 }, box.color, 1);
+                    state.line('boxB2', { x: x1, y: y2 }, { x: x2, y: y2 }, box.color, 1);
+                    state.line('boxL2', { x: x1, y: y1 }, { x: x1, y: y2 }, box.color, 1);
+                    state.line('boxR2', { x: x2, y: y1 }, { x: x2, y: y2 }, box.color, 1);
+                } else {
+                    var len = Math.min(w, h) * frac;
+                    var corners = [[x1, y1, 1, 1], [x2, y1, -1, 1], [x1, y2, 1, -1], [x2, y2, -1, -1]];
+                    for (var i = 0; i < corners.length; ++i) {
+                        var c = corners[i];
+                        state.line('ch' + i, { x: c[0], y: c[1] }, { x: c[0] + c[2] * len, y: c[1] }, box.color, 1);
+                        state.line('cv' + i, { x: c[0], y: c[1] }, { x: c[0], y: c[1] + c[3] * len }, box.color, 1);
+                    }
                 }
             }
-            if (skel.on) {
-                var chains = [['head_0', 'neck_0', 'spine_3', 'spine_2', 'spine_1', 'pelvis'],
-                              ['neck_0', 'arm_upper_L', 'arm_lower_L', 'hand_L'],
-                              ['neck_0', 'arm_upper_R', 'arm_lower_R', 'hand_R'],
-                              ['pelvis', 'leg_upper_L', 'leg_lower_L', 'ankle_L'],
-                              ['pelvis', 'leg_upper_R', 'leg_lower_R', 'ankle_R']];
-                for (var c = 0; c < chains.length; ++c)
-                    for (var i = 1; i < chains[c].length; ++i) {
-                        var p = bones[chains[c][i - 1]], q = bones[chains[c][i]];
-                        if (p && q) state.line('bone' + c + '_' + i, p, q, skel.color, Math.max(0.6, skel.thickness));
-                    }
+            if ((cfg.skeleton || {}).on) {
+                var sk = cfg.skeleton;
+                var pairs = [['head_0', 'neck_0'], ['neck_0', 'spine_3'], ['spine_3', 'spine_2'],
+                             ['spine_2', 'spine_1'], ['spine_1', 'spine_0'], ['spine_0', 'pelvis'],
+                             ['spine_3', 'arm_upper_L'], ['arm_upper_L', 'arm_lower_L'], ['arm_lower_L', 'hand_L'],
+                             ['spine_3', 'arm_upper_R'], ['arm_upper_R', 'arm_lower_R'], ['arm_lower_R', 'hand_R'],
+                             ['pelvis', 'leg_upper_L'], ['leg_upper_L', 'leg_lower_L'], ['leg_lower_L', 'ankle_L'],
+                             ['pelvis', 'leg_upper_R'], ['leg_upper_R', 'leg_lower_R'], ['leg_lower_R', 'ankle_R']];
+                for (var i = 0; i < pairs.length; ++i) {
+                    var p = bones[pairs[i][0]], q = bones[pairs[i][1]];
+                    if (p && q) state.line('bone' + i, p, q, sk.color, Math.max(0.6, sk.thickness));
+                }
             }
-            if (cfg.name && cfg.name.on)
-                state.text('name', left, top - 15, cfg.name.text, cfg.name.color);
-            var bars = [cfg.health, cfg.ammo];
-            for (var i = 0; i < bars.length; ++i) {
-                var bar = bars[i]; if (!bar || !bar.on) continue;
-                var x = left - 7 - i * 5, y = top, w = 3, h = bottom - top;
-                state.rect('barTrack' + i, x, y, w, h, 'rgba(10,12,14,0.85)');
-                var ratio = i === 0 ? 0.84 : 0.72;
-                state.rect('barFill' + i, x, y + h * (1 - ratio), w, h * ratio, bar.color);
-                state.text('barValue' + i, Math.max(0, x - 24), y, i === 0 ? '84' : '100', bar.textColor);
+            var hp = cfg.health || {};
+            if (hp.on) {
+                var fracH = Math.max(0, Math.min(1, hp.frac || 0));
+                var barX = x1 - 5, fillH = h * fracH;
+                state.rect('hpOut', barX - 1, y1 - 1, 4, h + 2, 'rgba(0,0,0,0.7)');
+                state.rect('hpBg', barX, y1, 2, h, 'rgba(0,0,0,0.8)');
+                if (fillH > 0) state.rect('hpFill', barX, y2 - fillH, 2, fillH, hp.color);
+                if (hp.text && hp.value < 100)
+                    state.text('hpValue', barX - 3, y2 - fillH - 7, '' + hp.value, hp.textColor);
             }
-            var flags = cfg.flags || [], fy = bottom + 18;
-            for (var i = 0; i < flags.length; ++i)
-                if (flags[i].on) { state.text('flag' + i, left, fy, flags[i].text, flags[i].color); fy += 12; }
+            if ((cfg.name || {}).on && cfg.name.text)
+                state.text('name', x1 + (w - 46) * 0.5, y1 - 14, cfg.name.text, cfg.name.color);
+            var weapon = cfg.weapon || {};
+            var ammo = cfg.ammo || {};
+            var below = y2 + 2;
+            if (ammo.on) {
+                var fracA = Math.max(0, Math.min(1, ammo.frac || 0));
+                state.rect('ammoOut', x1 - 1, below - 1, w + 2, 4, 'rgba(0,0,0,0.7)');
+                state.rect('ammoBg', x1, below, w, 2, 'rgba(0,0,0,0.8)');
+                if (fracA > 0) state.rect('ammoFill', x1, below, w * fracA, 2, ammo.color);
+                below += 4;
+                if (ammo.text) state.text('ammoText', x1 + 4, below, ammo.text, ammo.textColor);
+                below += ammo.text ? 11 : 0;
+            }
+            if (weapon.on && weapon.text)
+                state.text('weapon', x1 + (w - 40) * 0.5, below, weapon.text, weapon.color);
+            var flags = cfg.flags || [], fy = y1;
+            for (var i = 0; i < flags.length; ++i) {
+                if (!flags[i].on) continue;
+                state.text('flag' + i, x2 + 3, fy, flags[i].text, flags[i].color);
+                fy += 7;
+            }
         };
         state.frameHandler = $.RegisterForUnhandledEvent('UISceneFrameBoundary', state.drawEsp);
         var expire = function () {
@@ -182,18 +217,45 @@ const SCRIPT: &str = r#"
 })(__ARGS__);
 "#;
 
-#[derive(Clone, Copy, Debug)]
+/// One flag line for the preview ESP (already formatted, e.g. "37m").
+#[derive(Clone, Debug, Default)]
+pub struct PreviewFlag {
+    pub on: bool,
+    pub text: String,
+    pub color: [u8; 4],
+}
+
+/// Everything the Panorama preview script needs to draw the exact same ESP the
+/// world overlay draws (Celerity geometry, real target values).
+#[derive(Clone, Debug, Default)]
 pub struct PreviewConfig {
+    pub enabled: bool,
     pub enemy: bool,
-    pub visible: bool,
     pub box_on: bool,
+    pub corner_fraction: f32,
+    pub box_color: [u8; 4],
     pub skeleton_on: bool,
+    pub skeleton_thickness: f32,
+    pub skeleton_color: [u8; 4],
     pub name_on: bool,
+    pub name_text: String,
+    pub name_color: [u8; 4],
     pub health_on: bool,
-    pub armor_on: bool,
-    pub distance_on: bool,
-    pub weapon_on: bool,
+    pub health_value: i32,
+    pub health_fraction: f32,
+    pub health_text: bool,
+    pub health_low_color: [u8; 4],
+    pub health_high_color: [u8; 4],
     pub ammo_on: bool,
+    pub ammo_fraction: f32,
+    pub ammo_text: String,
+    pub ammo_text_on: bool,
+    pub ammo_low_color: [u8; 4],
+    pub ammo_high_color: [u8; 4],
+    pub weapon_on: bool,
+    pub weapon_text: String,
+    pub weapon_color: [u8; 4],
+    pub flags: Vec<PreviewFlag>,
 }
 
 struct Request {
@@ -294,9 +356,18 @@ fn build_script(active: bool, rect: (f32, f32, f32, f32), screen: (f32, f32), cf
     } else {
         "agents/models/ctm_sas/ctm_sas.vmdl"
     };
-    let box_color: [u8; 4] = if cfg.enemy { [255, 122, 110, 255] } else { [128, 196, 255, 255] };
-    let skel_color: [u8; 4] = if cfg.visible { [236, 240, 248, 255] } else { [255, 112, 104, 255] };
-    let name_color: [u8; 4] = if cfg.enemy { [255, 142, 128, 255] } else { [142, 206, 255, 255] };
+    let box_color = cfg.box_color;
+    let skel_color = cfg.skeleton_color;
+    let name_color = cfg.name_color;
+    let health_color = lerp_preview_color(cfg.health_low_color, cfg.health_high_color, cfg.health_fraction);
+    let ammo_color = lerp_preview_color(cfg.ammo_low_color, cfg.ammo_high_color, cfg.ammo_fraction);
+    let flags: Vec<serde_json::Value> = cfg
+        .flags
+        .iter()
+        .map(|flag| {
+            serde_json::json!({ "on": flag.on, "text": flag.text, "color": css(flag.color) })
+        })
+        .collect();
     let args = serde_json::json!({
         "active": active,
         "agent": true,
@@ -310,20 +381,41 @@ fn build_script(active: bool, rect: (f32, f32, f32, f32), screen: (f32, f32), cf
         "model": model,
         "def": 5,
         "esp": {
-            "enabled": true,
-            "box": { "on": cfg.box_on, "corner": 12, "color": css(box_color) },
-            "skeleton": { "on": cfg.skeleton_on, "thickness": 1.5, "color": css(skel_color) },
-            "name": { "on": cfg.name_on, "text": if cfg.enemy { "Enemy" } else { "Team" }, "color": css(name_color) },
-            "health": { "on": cfg.health_on, "color": "rgba(110,228,145,1)", "textColor": "rgba(132,236,160,1)" },
-            "ammo": { "on": cfg.armor_on, "color": "rgba(130,190,240,1)", "textColor": "rgba(150,190,240,1)" },
-            "flags": [
-                { "on": cfg.distance_on, "text": "12 m", "color": "rgba(190,194,202,1)" },
-                { "on": cfg.weapon_on, "text": "AK-47", "color": "rgba(200,205,215,1)" },
-                { "on": cfg.ammo_on, "text": "30/90", "color": "rgba(220,225,235,1)" }
-            ]
+            "enabled": cfg.enabled,
+            "box": { "on": cfg.box_on, "corner": cfg.corner_fraction, "color": css(box_color) },
+            "skeleton": { "on": cfg.skeleton_on, "thickness": cfg.skeleton_thickness, "color": css(skel_color) },
+            "name": { "on": cfg.name_on, "text": cfg.name_text, "color": css(name_color) },
+            "health": {
+                "on": cfg.health_on,
+                "value": cfg.health_value,
+                "frac": cfg.health_fraction,
+                "text": cfg.health_text,
+                "color": css(health_color),
+                "textColor": "rgba(255,255,255,1)"
+            },
+            "ammo": {
+                "on": cfg.ammo_on,
+                "frac": cfg.ammo_fraction,
+                "text": cfg.ammo_text,
+                "textColor": "rgba(255,255,255,1)",
+                "color": css(ammo_color)
+            },
+            "weapon": { "on": cfg.weapon_on, "text": cfg.weapon_text, "color": css(cfg.weapon_color) },
+            "flags": flags
         }
     });
     SCRIPT.replace("__ARGS__", &args.to_string())
+}
+
+/// Same linear interpolation the overlay uses for gradient health/ammo bars.
+fn lerp_preview_color(a: [u8; 4], b: [u8; 4], t: f32) -> [u8; 4] {
+    let t = t.clamp(0.0, 1.0);
+    [
+        (a[0] as f32 + (b[0] as f32 - a[0] as f32) * t) as u8,
+        (a[1] as f32 + (b[1] as f32 - a[1] as f32) * t) as u8,
+        (a[2] as f32 + (b[2] as f32 - a[2] as f32) * t) as u8,
+        (a[3] as f32 + (b[3] as f32 - a[3] as f32) * t) as u8,
+    ]
 }
 
 /// Меню только сохраняет запрос; отправка идёт из FrameStageNotify.
@@ -405,7 +497,7 @@ pub fn tick() {
                     mode.as_str(),
                     panel
                 ));
-                let dispose = build_script(false, req.rect, req.screen, req.cfg);
+                let dispose = build_script(false, req.rect, req.screen, req.cfg.clone());
                 if let Err(reason) = panorama.run_script(&dispose) {
                     dispose_error = Some(reason.to_string());
                 }

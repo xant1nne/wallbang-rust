@@ -461,7 +461,6 @@ impl Ui {
         let row_h = 24.0;
         let sw_w = 28.0;
         let sw_h = 16.0;
-        let has_popup = self.popup_owners.contains(label);
         let sw_x = x + w - sw_w;
         let sw_y = y + 4.0;
         let hover = !self.overlay_blocking() && self.inside(x, y, w, row_h);
@@ -480,15 +479,6 @@ impl Ui {
         let knob_x = sw_x + 3.0 + (sw_w - 10.0 - 6.0) * t;
         let knob = lerp_color(s.text_dim, s.checkbox_mark_icon, t);
         dl.rect_rounded(knob_x, sw_y + 3.0, 10.0, 10.0, 2.0, knob);
-
-        // Tiny settings affordance left of the switch; it must not shift the switch.
-        if has_popup {
-            let dot_col = [92, 92, 98, 255];
-            let cy = y + row_h * 0.5;
-            let gx = sw_x - 10.0;
-            dl.rect(gx, cy - 1.0, 2.0, 2.0, dot_col);
-            dl.rect(gx + 4.0, cy - 1.0, 2.0, 2.0, dot_col);
-        }
 
         // Subtle dark hairline divider under the row (as in the C++ menu).
         dl.rect(x, y + row_h + 3.0, w, 1.0, [18, 18, 18, 255]);
@@ -961,8 +951,14 @@ impl Ui {
         }
 
         let (screen_w, screen_h) = dl.size();
-        let x = (anchor.0 + anchor.2 + 8.0).min(screen_w - w - 6.0).max(6.0);
-        let y = anchor.1.min(screen_h - h - 6.0).max(6.0);
+        // Drop-down style: right-aligned under the row, kept inside the screen.
+        let x = (anchor.0 + anchor.2 - w)
+            .max(anchor.0)
+            .min(screen_w - w - 6.0)
+            .max(6.0);
+        let y = (anchor.1 + anchor.3 + 4.0)
+            .min(screen_h - h - 6.0)
+            .max(6.0);
         dl.begin_top();
         dl.rect_rounded(x, y, w, h, WIDGET_ROUNDING, s.dark);
         dl.outline_rounded(x, y, w, h, WIDGET_ROUNDING, 1.0, s.border);
