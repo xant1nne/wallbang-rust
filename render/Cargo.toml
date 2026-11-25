@@ -1,0 +1,15 @@
+[package]
+name = "wallbang_render"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+wallbang_config = { workspace = true }
+wallbang_core = { workspace = true }
+wallbang_resources = { workspace = true }
+gltf = { workspace = true }
+image = { workspace = true }
+parking_lot = { workspace = true }
+serde_json = { workspace = true }
+windows = { workspace = true }

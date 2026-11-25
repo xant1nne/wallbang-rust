@@ -1,0 +1,6 @@
+# Config block: manual map требует статический CRT, иначе std и LuaJIT не переживают ручной маппинг.
+[build]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-args=/DYNAMICBASE"]
+
+[term]
+verbose = false

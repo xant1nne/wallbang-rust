@@ -1,0 +1,12 @@
+[package]
+name = "wallbang_feature"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+wallbang_config = { workspace = true }
+wallbang_core = { workspace = true }
+wallbang_resources = { workspace = true }
+wallbang_render = { workspace = true }
+parking_lot = { workspace = true }

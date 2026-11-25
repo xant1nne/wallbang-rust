@@ -1,0 +1,9 @@
+[package]
+name = "wallbang_core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+wallbang_config = { workspace = true }
+parking_lot = { workspace = true }

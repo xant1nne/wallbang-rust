@@ -1,0 +1,17 @@
+[package]
+name = "wallbang"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[lib]
+name = "wallbang"
+crate-type = ["cdylib"]
+
+[dependencies]
+wallbang_config = { workspace = true }
+wallbang_core = { workspace = true }
+wallbang_render = { workspace = true }
+wallbang_feature = { workspace = true }
+wallbang_lua = { workspace = true }
+parking_lot = { workspace = true }

@@ -1,0 +1,14 @@
+# Config block: offline-инструмент, не входит в workspace и не попадает в чит.
+# usage:
+#   sigscan pattern <dll> <name=pattern> [name=pattern ...]
+#   sigscan vtable  <dll> <rva-hex>
+[workspace]
+
+[package]
+name = "sigscan"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "sigscan"
+path = "src/main.rs"

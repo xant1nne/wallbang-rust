@@ -1,0 +1,11 @@
+# Config block: shared constants (timers, menu, layout, name limits) and workspace dependencies.
+[package]
+name = "wallbang_config"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+parking_lot.workspace = true

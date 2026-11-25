@@ -1,0 +1,16 @@
+# Config block:
+# MAX_SCHEDULED = 16384
+# MAX_DATABASE_KEYS = 65536
+# MAX_DATABASE_DEPTH = 16
+# MAX_DATABASE_BYTES = 16 * 1024 * 1024
+
+[package]
+name = "wallbang_lua"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+mlua = { workspace = true }
+parking_lot = { workspace = true }
+serde_json = { workspace = true }

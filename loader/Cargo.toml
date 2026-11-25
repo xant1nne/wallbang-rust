@@ -1,0 +1,20 @@
+# Config block: loader is a standalone binary; extra windows features are additive to the
+# workspace dependency so ToolHelp and raw PE structs stay available without editing the root manifest.
+[package]
+name = "wallbang_loader"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "wallbang_loader"
+path = "src/main.rs"
+
+[dependencies]
+windows = { workspace = true, features = [
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_SystemServices",
+    "Win32_System_WindowsProgramming",
+] }
+wallbang_config = { workspace = true }
