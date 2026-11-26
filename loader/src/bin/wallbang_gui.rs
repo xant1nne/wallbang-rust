@@ -402,7 +402,7 @@ fn main() {
         };
         let width = CLIENT_W.load(Ordering::Relaxed).max(320) as u32;
         let height = CLIENT_H.load(Ordering::Relaxed).max(240) as u32;
-        let Some(mut swapchain) = create_swapchain(hwnd, width, height) else {
+        let Some(swapchain) = create_swapchain(hwnd, width, height) else {
             return;
         };
         let Some(mut renderer) = Dx11::new(&swapchain) else {

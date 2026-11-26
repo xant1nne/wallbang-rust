@@ -22,6 +22,12 @@ pub fn on_create_move(cmd: UserCmd, state: &GameState) {
     if !settings.combat.ragebot.enabled && !settings.combat.legit.enabled {
         return;
     }
+    if !settings.combat.ragebot.enabled
+        && settings.combat.legit.enabled
+        && !settings.combat.legit.group().aimbot
+    {
+        return;
+    }
 
     let decision = super::run(state, cmd.client_tick().max(0) as u32);
     if !decision.fire || decision.target.is_none() {
@@ -32,7 +38,7 @@ pub fn on_create_move(cmd: UserCmd, state: &GameState) {
     };
     let want = angle_to(from, decision.point).normalized();
 
-    if settings.combat.ragebot.enabled || settings.combat.ragebot.silent {
+    if settings.combat.ragebot.enabled {
         // silent: углы живут только в команде, живой обзор не трогаем.
         cmd.set_view_angles(want);
         cmd.add_buttons(IN_ATTACK);

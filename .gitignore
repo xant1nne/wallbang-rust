@@ -5,3 +5,5 @@ graphify-out/cache/last_query_stamp
 $log
 *.log
 wallbang_log.txt
+graphify-out/cache/ast/
+graphify-out/.graphify_python

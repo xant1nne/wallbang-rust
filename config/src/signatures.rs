@@ -7,6 +7,12 @@ pub const SIG_CREATE_MOVE: &str = "48 8B C4 4C 89 40 ? 48 89 48 ? 55 53 56 57 48
 /// поэтому пролог-хук ворует их без риска разрезать инструкцию.
 pub const SIG_CREATE_MOVE_PROLOGUE: &str = "48 8B C4 4C 89 40 ? 48 89 48 ? 55 53 56 57";
 pub const CREATE_MOVE_STEAL_BYTES: usize = 15;
+/// client.dll, UNIQUE (RVA 0xB60637): call site that stores the returned
+/// `CUserCmd*` at `[rsp+0x40]`. Patching this `call rel32` is safer than hooking
+/// the callee's prologue, which contains a relative call in its stolen bytes.
+pub const SIG_AUTO_MAKE_USER_CMD_CALL: &str = "E8 ? ? ? ? 48 89 44 24 40 48 8D 4D F0";
+/// Offline-verified target of `SIG_AUTO_MAKE_USER_CMD_CALL` on build 14201.
+pub const AUTO_MAKE_USER_CMD_RVA: usize = 0x9447B0;
 /// client.dll, UNIQUE (RVA 0xB6BA40): CCSGOInput::GetViewAngles.
 pub const SIG_GET_VIEW_ANGLES: &str = "4C 8B C1 85 D2 74 08 48 8D 05 ? ? ? ? C3";
 /// client.dll, UNIQUE (RVA 0x9DCE6A): dwEntityList.
@@ -98,6 +104,32 @@ pub const SIG_INPUT_SYSTEM_SVC: &str =
     "48 8D 05 ? ? ? ? C3 CC CC CC CC CC CC CC CC 40 53 48 83 EC 20 33 DB";
 /// Смещение disp32 внутри SIG_INPUT_SYSTEM_SVC (байты 3..7), откуда считается глобал.
 pub const SIG_INPUT_SYSTEM_DISP: usize = 3;
+/// scenesystem.dll, UNIQUE (RVA 0x3C5A0): CRenderScene drawing entry.
+/// Источник: web (HvH sig list 23.09.2026), проверено tools/sigscan на локальном
+/// scenesystem.dll 25.11.2026 — одно совпадение. Используется для world color.
+pub const SIG_DRAW_SCENE_OBJECT_ARRAY: &str =
+    "48 8B C4 48 89 50 ? 48 89 48 ? 55 53 56 57 41 54 41 55 41 56 41 57";
+pub const DRAW_SCENE_OBJECT_ARRAY_STEAL_BYTES: usize = 23;
+/// Branch-safe alternative: the vtable slot in scenesystem.dll whose value is
+/// `CRenderScene::DrawSceneObjectArray`. Verified offline from the local dump.
+pub const DRAW_SCENE_OBJECT_ARRAY_RVA: usize = 0x3C5A0;
+pub const DRAW_SCENE_OBJECT_ARRAY_SLOT_RVA: usize = 0x5E4550;
+/// scenesystem.dll, UNIQUE (RVA 0x154FB0): skybox draw entry.
+/// Источник: web (HvH sig list), проверено tools/sigscan — одно совпадение.
+pub const SIG_DRAW_SKYBOX_ARRAY: &str = "45 85 C9 0F 8E ? ? ? ? 4C 8B DC";
+/// Branch-safe vtable slot for the skybox draw entry. Verified offline:
+/// scenesystem.dll+0x5F6510 holds `base + 0x154FB0`.
+pub const DRAW_SKYBOX_ARRAY_RVA: usize = 0x154FB0;
+pub const DRAW_SKYBOX_ARRAY_SLOT_RVA: usize = 0x5F6510;
+/// client.dll, UNIQUE (RVA 0x283270): fog setup. Web-сигнатура, проверена sigscan.
+pub const SIG_SETUP_FOG: &str =
+    "48 89 5C 24 ? 48 89 6C 24 ? 48 89 74 24 ? 48 89 4C 24 ? 57 41 54 41 55 41 56 41 57 48 83 EC 20 48 63 02";
+/// client.dll, UNIQUE (RVA 0xD1DBE8): smoke render. Web-сигнатура, проверена sigscan.
+pub const SIG_RENDER_SMOKE: &str = "5C 24 28 48 89 44 24 20 E8 ? ? ? ? 48 8B 5C 24 60";
+/// client.dll, 2 matches (RVA 0x184CFD0/0x184E6B0): scene material prepare.
+/// Источник: web (HvH sig list), проверено sigscan; используется только после
+/// Additional validation в early-init, поэтому в хуки пока не входит.
+pub const SIG_PREPARE_SCENE_MATERIAL: &str = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 30 48 8B 59 20";
 /// Путь к IDA Pro Хозяина (для реверса недостающих сигнатур).
 pub const IDA_PRO_PATH: &str = r"C:\Users\dmitr\Downloads\AyuGram Desktop\IDA Pro\IDA Pro";
 

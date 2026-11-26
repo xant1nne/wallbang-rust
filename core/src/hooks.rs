@@ -8,6 +8,7 @@ const MEM_COMMIT: u32 = 0x1000;
 const MEM_RESERVE: u32 = 0x2000;
 const MEM_RELEASE: u32 = 0x8000;
 const ABS_JMP_LEN: usize = 14;
+const REL_CALL_LEN: usize = 5;
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -262,6 +263,109 @@ impl PrologueHook {
 }
 
 impl Drop for PrologueHook {
+    fn drop(&mut self) {
+        unsafe { self.remove() };
+    }
+}
+
+/// Replaces a single `call rel32` instruction with a call to a detour.
+///
+/// Unlike `PrologueHook`, this does not copy the callee's prologue, so it is
+/// safe for functions whose stolen bytes contain relative branches. The
+/// detour calls the original callee by address and returns to the instruction
+/// after the patched call, preserving the caller's stack.
+pub struct CallHook {
+    target: usize,
+    original: [u8; REL_CALL_LEN],
+    active: bool,
+}
+
+impl CallHook {
+    pub unsafe fn install(target: usize, detour: usize) -> Option<Self> {
+        if target == 0 || detour == 0 {
+            return None;
+        }
+        let original = std::slice::from_raw_parts(target as *const u8, REL_CALL_LEN).to_vec();
+        if original[0] != 0xE8 {
+            return None;
+        }
+        let rel = detour as isize - (target + REL_CALL_LEN) as isize;
+        let Ok(rel) = i32::try_from(rel) else {
+            return None;
+        };
+        let mut bytes = [0xE8u8, 0, 0, 0, 0];
+        bytes[1..].copy_from_slice(&rel.to_le_bytes());
+
+        let mut old_protect = 0u32;
+        if VirtualProtect(
+            target as *mut c_void,
+            REL_CALL_LEN,
+            PAGE_EXECUTE_READWRITE,
+            &mut old_protect,
+        ) == 0
+        {
+            return None;
+        }
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), target as *mut u8, REL_CALL_LEN);
+        let mut restored = 0u32;
+        VirtualProtect(
+            target as *mut c_void,
+            REL_CALL_LEN,
+            old_protect,
+            &mut restored,
+        );
+        FlushInstructionCache(GetCurrentProcess(), target as *const c_void, REL_CALL_LEN);
+
+        Some(Self {
+            target,
+            original: original.try_into().ok()?,
+            active: true,
+        })
+    }
+
+    /// Address the patched instruction originally called.
+    pub fn original_target(&self) -> usize {
+        let rel = i32::from_le_bytes(self.original[1..].try_into().unwrap()) as isize;
+        (self.target + REL_CALL_LEN)
+            .wrapping_add(rel as usize)
+    }
+
+    #[inline]
+    pub fn target(&self) -> usize {
+        self.target
+    }
+
+    pub unsafe fn remove(&mut self) {
+        if !self.active {
+            return;
+        }
+        let mut old_protect = 0u32;
+        if VirtualProtect(
+            self.target as *mut c_void,
+            REL_CALL_LEN,
+            PAGE_EXECUTE_READWRITE,
+            &mut old_protect,
+        ) != 0
+        {
+            std::ptr::copy_nonoverlapping(
+                self.original.as_ptr(),
+                self.target as *mut u8,
+                REL_CALL_LEN,
+            );
+            let mut restored = 0u32;
+            VirtualProtect(
+                self.target as *mut c_void,
+                REL_CALL_LEN,
+                old_protect,
+                &mut restored,
+            );
+            FlushInstructionCache(GetCurrentProcess(), self.target as *const c_void, REL_CALL_LEN);
+        }
+        self.active = false;
+    }
+}
+
+impl Drop for CallHook {
     fn drop(&mut self) {
         unsafe { self.remove() };
     }

@@ -430,6 +430,10 @@ impl Menu {
         self.ext.world_mat = ambience.world_material;
         self.ext.world_mat_type = ambience.world_material_type;
         self.ext.world_mat_col = ambience.world_material_color;
+        self.ext.world_color = ambience.world_color;
+        self.ext.world_col = ambience.world_color_tint;
+        self.ext.remove_3d_skybox = ambience.remove_3d_skybox;
+        self.ext.remove_skybox_fog = ambience.remove_skybox_fog;
         self.ext.lighting = ambience.lighting;
         self.ext.lighting_int = ambience.lighting_intensity;
         self.ext.lighting_col = ambience.lighting_color;
@@ -439,6 +443,8 @@ impl Menu {
         self.ext.weather_on = ambience.weather_on;
         self.ext.weather_type = ambience.weather;
         self.ext.weather_col = ambience.weather_color;
+        self.ext.fire_area = settings.visual.fire_area;
+        self.ext.fire_area_col = settings.visual.fire_area_color;
         self.ext.proj_traj = settings.visual.grenade.trajectory;
         if settings.visual.items.groups.len() == 6 {
             self.ext.item_esp.copy_from_slice(&settings.visual.items.groups);
@@ -546,6 +552,10 @@ impl Menu {
         ambience.world_material = ext.world_mat;
         ambience.world_material_type = ext.world_mat_type;
         ambience.world_material_color = ext.world_mat_col;
+        ambience.world_color = ext.world_color;
+        ambience.world_color_tint = ext.world_col;
+        ambience.remove_3d_skybox = ext.remove_3d_skybox;
+        ambience.remove_skybox_fog = ext.remove_skybox_fog;
         ambience.lighting = ext.lighting;
         ambience.lighting_intensity = ext.lighting_int;
         ambience.lighting_color = ext.lighting_col;
@@ -556,6 +566,8 @@ impl Menu {
         ambience.weather = ext.weather_type;
         ambience.weather_color = ext.weather_col;
 
+        settings.visual.fire_area = ext.fire_area;
+        settings.visual.fire_area_color = ext.fire_area_col;
         settings.visual.grenade.trajectory = ext.proj_traj;
         settings.visual.items.groups = ext.item_esp.to_vec();
         settings.visual.items.enabled = ext.item_esp.iter().any(|v| *v);
@@ -821,17 +833,19 @@ impl Menu {
             self.draw_config(dl, state, x, y, w, h, s);
             return;
         }
-        if (PREVIEW_TAB..=5).contains(&self.tab) {
+        if self.tab <= 5 {
             self.draw_top_bar(dl, x, y, w, s);
             let content_y = y + SUBTAB_BAR_H;
             let content_h = (h - SUBTAB_BAR_H).max(80.0);
             match self.tab {
-                PREVIEW_TAB => self.draw_players(
-                    dl, state, mx, my, mw, x, content_y, w, content_h, s,
-                ),
-                3 => self.draw_world(dl, x, content_y, w, content_h, s),
-                4 => self.draw_skins(dl, x, content_y, w, content_h, s),
-                5 => self.draw_misc(dl, state, x, content_y, w, content_h, s),
+                0 => self.draw_ragebot(dl, state, x, content_y, w, content_h, s),
+                1 => self.draw_legitbot(dl, state, x, content_y, w, content_h, s),
+                PREVIEW_TAB => {
+                    self.draw_esp_real(dl, x, content_y, w, content_h, s);
+                }
+                3 => self.draw_visuals_real(dl, state, x, content_y, w, content_h, s),
+                4 => self.draw_unavailable(dl, x, content_y, w, content_h, s),
+                5 => self.draw_misc_real(dl, state, x, content_y, w, content_h, s),
                 _ => {}
             }
             return;
@@ -852,6 +866,161 @@ impl Menu {
             s.text_dim,
             1.0,
         );
+    }
+
+    /// Only ESP switches that are actually read by `esp_draw.rs`. Everything
+    /// else from the ported menu (oof arrows, glow, extra chams layers) was
+    /// UI-only state and is intentionally not shown.
+    fn draw_esp_real(&mut self, dl: &mut DrawList, x: f32, y: f32, w: f32, h: f32, s: &Style) {
+        let subtab = self.subtab.min(1);
+        let ov = &mut self.ext.overlays[subtab];
+        self.ui.child(dl, x, y, w, h, true, s, |ui, dl| {
+            ui.text(dl, if subtab == 0 { "Enemies" } else { "Allies" }, s.text_dim, 1.0);
+            ui.separator(dl, s);
+            ui.checkbox(dl, "enable", &mut ov.enabled, s);
+            ui.checkbox(dl, "box", &mut ov.box_on, s);
+            ui.popup(dl, "##box_popup_real", POPUP_W, 124.0, s, |ui, dl| {
+                ui.combo(dl, "style##box_real", &mut ov.box_style, &BOX_STYLES, s);
+                ui.slider_f32(dl, "corner length##real", &mut ov.corner_len, 0.05, 0.5, 2, "", s);
+                ui.color_picker(dl, "color##box_real", &mut ov.box_color, s);
+            });
+            ui.checkbox(dl, "skeleton", &mut ov.skel_on, s);
+            ui.popup(dl, "##skel_popup_real", POPUP_W, 56.0, s, |ui, dl| {
+                ui.color_picker(dl, "visible color##skel_real", &mut ov.skel_vis, s);
+            });
+            ui.checkbox(dl, "health bar", &mut ov.health.enabled, s);
+            ui.popup(dl, "##hp_popup_real", POPUP_W, 124.0, s, |ui, dl| {
+                ui.checkbox(dl, "gradient##hp_real", &mut ov.health.gradient, s);
+                ui.checkbox(dl, "show value##hp_real", &mut ov.health.show_value, s);
+                ui.color_picker(dl, "full color##hp_real", &mut ov.health.full_color, s);
+                ui.color_picker(dl, "low color##hp_real", &mut ov.health.low_color, s);
+            });
+            ui.checkbox(dl, "ammo bar", &mut ov.ammo.enabled, s);
+            ui.popup(dl, "##ammo_popup_real", POPUP_W, 124.0, s, |ui, dl| {
+                ui.checkbox(dl, "gradient##ammo_real", &mut ov.ammo.gradient, s);
+                ui.checkbox(dl, "show value##ammo_real", &mut ov.ammo.show_value, s);
+                ui.color_picker(dl, "full color##ammo_real", &mut ov.ammo.full_color, s);
+                ui.color_picker(dl, "low color##ammo_real", &mut ov.ammo.low_color, s);
+            });
+            ui.checkbox(dl, "name", &mut ov.name_on, s);
+            ui.popup(dl, "##name_popup_real", POPUP_W, 56.0, s, |ui, dl| {
+                ui.color_picker(dl, "color##name_real", &mut ov.name_color, s);
+            });
+            ui.checkbox(dl, "weapon", &mut ov.weapon_on, s);
+            ui.popup(dl, "##wep_popup_real", POPUP_W, 56.0, s, |ui, dl| {
+                ui.color_picker(dl, "text color##wep_real", &mut ov.weapon_text, s);
+            });
+            ui.checkbox(dl, "flags", &mut ov.flags_on, s);
+            ui.popup(dl, "##flags_popup_real", POPUP_W, 110.0, s, |ui, dl| {
+                ui.multicombo(dl, "flags##mc_real", &mut ov.flags, &FLAG_NAMES, s);
+                ui.color_picker(dl, "color##flags_real", &mut ov.flags_color, s);
+            });
+        });
+    }
+
+    /// Only controls with a real backend: read-only fire hull, guarded world
+    /// tint, branch-safe removal hooks, and confirmed engine cvars.
+    fn draw_visuals_real(
+        &mut self,
+        dl: &mut DrawList,
+        state: &GameState,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        s: &Style,
+    ) {
+        let mut settings = state.settings_mut();
+        let ambience = &mut settings.visual.ambience;
+        self.ui.child(dl, x, y, w, h.min(460.0), true, s, |ui, dl| {
+            ui.text(dl, "World overlay", s.text_dim, 1.0);
+            ui.separator(dl, s);
+            ui.checkbox(dl, "fire area", &mut self.ext.fire_area, s);
+            ui.popup(dl, "##fire_area_real", POPUP_W, 56.0, s, |ui, dl| {
+                ui.color_picker(dl, "color##fire_real", &mut self.ext.fire_area_col, s);
+            });
+            ui.checkbox(dl, "world color", &mut self.ext.world_color, s);
+            ui.popup(dl, "##world_color_real", POPUP_W, 56.0, s, |ui, dl| {
+                ui.color_picker(dl, "color##world_real", &mut self.ext.world_col, s);
+            });
+            ui.separator(dl, s);
+            ui.text(dl, "Scene", s.text_dim, 1.0);
+            ui.checkbox(dl, "remove 3d skybox", &mut self.ext.remove_3d_skybox, s);
+            ui.checkbox(dl, "remove skybox fog", &mut self.ext.remove_skybox_fog, s);
+            ui.separator(dl, s);
+            ui.text(dl, "Lighting", s.text_dim, 1.0);
+            ui.checkbox(dl, "lighting", &mut ambience.lighting, s);
+            if ambience.lighting {
+                ui.slider_f32(dl, "intensity##light", &mut ambience.lighting_intensity, 0.0, 4.0, 2, "", s);
+            }
+            ui.separator(dl, s);
+            ui.text(dl, "Fog", s.text_dim, 1.0);
+            ui.checkbox(dl, "fog override", &mut ambience.fog, s);
+            if ambience.fog {
+                ui.slider_f32(dl, "density##fog", &mut ambience.fog_density, 0.0, 1.0, 2, "", s);
+                ui.slider_f32(dl, "end##fog", &mut ambience.fog_end, 0.0, 20_000.0, 0, "", s);
+            }
+            ui.separator(dl, s);
+            ui.text(dl, "Post", s.text_dim, 1.0);
+            ui.checkbox(dl, "bloom", &mut ambience.bloom, s);
+            if ambience.bloom {
+                ui.slider_f32(dl, "strength##bloom", &mut ambience.bloom_strength, 0.0, 4.0, 2, "", s);
+            }
+            ui.checkbox(dl, "gamma", &mut ambience.gamma, s);
+            if ambience.gamma {
+                ui.slider_f32(dl, "value##gamma", &mut ambience.gamma_value, 0.5, 4.0, 2, "", s);
+            }
+            ui.checkbox(dl, "depth of field", &mut ambience.dof, s);
+            if ambience.dof {
+                ui.slider_f32(dl, "near blur##dof", &mut ambience.dof_near_blurry, 0.0, 2_000.0, 0, "", s);
+                ui.slider_f32(dl, "far blur##dof", &mut ambience.dof_far_blurry, 0.0, 2_000.0, 0, "", s);
+            }
+            ui.separator(dl, s);
+            ui.text(dl, "Weather", s.text_dim, 1.0);
+            ui.checkbox(dl, "rain particles", &mut ambience.weather_on, s);
+            if ambience.weather_on {
+                ui.slider_f32(dl, "density##rain", &mut ambience.weather_density, 0.0, 10_000.0, 0, "", s);
+            }
+            ui.separator(dl, s);
+            ui.text(dl, "Smoke", s.text_dim, 1.0);
+            ui.checkbox(dl, "reduce smoke effects", &mut ambience.smoke_removal, s);
+        });
+    }
+
+    fn draw_unavailable(&mut self, dl: &mut DrawList, x: f32, y: f32, w: f32, h: f32, s: &Style) {
+        self.ui.child(dl, x, y, w, h.min(160.0), true, s, |ui, dl| {
+            ui.text(dl, "No implemented features in this section.", s.text_dim, 1.0);
+        });
+    }
+
+    /// Movement is the Celerity 1:1 port; radar reveal and the write gate have
+    /// real backends. Everything else in the old Misc panel was UI-only.
+    fn draw_misc_real(
+        &mut self,
+        dl: &mut DrawList,
+        state: &GameState,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        s: &Style,
+    ) {
+        let mut settings = state.settings_mut();
+        self.ui.child(dl, x, y, w, h.min(320.0), true, s, |ui, dl| {
+            ui.text(dl, "Movement", s.text_dim, 1.0);
+            ui.separator(dl, s);
+            ui.checkbox(dl, "bhop", &mut settings.misc.bhop, s);
+            ui.checkbox(dl, "autostrafe", &mut settings.misc.autostrafe, s);
+            ui.checkbox(dl, "jumpbug", &mut settings.misc.movement.jumpbug, s);
+            ui.checkbox(dl, "mini jump", &mut settings.misc.movement.mini_jump, s);
+            ui.checkbox(dl, "edgejump", &mut settings.misc.movement.edgejump, s);
+            ui.separator(dl, s);
+            ui.text(dl, "Game", s.text_dim, 1.0);
+            ui.checkbox(dl, "reveal radar", &mut settings.misc.reveal_radar, s);
+            ui.separator(dl, s);
+            ui.checkbox(dl, "allow writes", &mut settings.misc.allow_writes, s);
+            ui.text(dl, "Required for movement and combat writes.", s.text_dim, 0.9);
+        });
     }
 
     #[inline]
@@ -1254,7 +1423,104 @@ impl Menu {
         }
     }
 
+    /// Ragebot panel with only settings that `combat::run` actually reads.
+    /// Anti-aim, zeusbot, knifebot and quick-peek are not implemented, so they
+    /// are deliberately absent instead of being advertised as working.
     fn draw_ragebot(&mut self, dl: &mut DrawList, state: &GameState, x: f32, y: f32, w: f32, h: f32, s: &Style) {
+        let mut settings = state.settings_mut();
+        let combat = &mut settings.combat;
+        let col_w = (w - GAP) * 0.5;
+        let right_x = x + col_w + GAP;
+        let top_h = (h - GAP) * 0.56;
+        let bottom_h = (h - GAP) * 0.44;
+
+        self.ui.child(dl, x, y, col_w, top_h, true, s, |ui, dl| {
+            ui.text(dl, "Aimbot", s.text_dim, 1.0);
+            ui.separator(dl, s);
+            ui.combo(dl, "weapon group##rage", &mut combat.ragebot.weapon_group, &WEAPON_GROUPS, s);
+            let idx = combat.ragebot.weapon_group.min(5);
+            combat.ragebot.weapon_group = idx;
+            let wg = &mut combat.ragebot.groups[idx];
+            ui.checkbox(dl, "enabled", &mut combat.ragebot.enabled, s);
+            ui.slider_f32(dl, "fov", &mut wg.max_fov, 1.0, 180.0, 0, " deg", s);
+            ui.slider_i32(dl, "min damage", &mut wg.min_damage, 0, 130, "", s);
+        });
+
+        self.ui.child(dl, x, y + top_h + GAP, col_w, bottom_h, true, s, |ui, dl| {
+            ui.text(dl, "Target selection", s.text_dim, 1.0);
+            ui.separator(dl, s);
+            let idx = combat.ragebot.weapon_group.min(5);
+            let wg = &mut combat.ragebot.groups[idx];
+            ui.multicombo(dl, "hitboxes", &mut wg.hitboxes, &HITBOXES, s);
+            ui.slider_f32(dl, "pointscale", &mut wg.pointscale, 0.0, 100.0, 0, "%", s);
+            ui.checkbox(dl, "dynamic pointscale", &mut wg.dynamic_pointscale, s);
+            ui.slider_i32(dl, "hitchance", &mut wg.hitchance, 0, 100, "%", s);
+        });
+
+        self.ui.child(dl, right_x, y, col_w, top_h, true, s, |ui, dl| {
+            ui.text(dl, "Overrides & timing", s.text_dim, 1.0);
+            ui.separator(dl, s);
+            let idx = combat.ragebot.weapon_group.min(5);
+            let wg = &mut combat.ragebot.groups[idx];
+            ui.checkbox(dl, "hitchance override", &mut wg.hitchance_override, s);
+            ui.popup(dl, "##hitchance_popup", POPUP_W, 56.0, s, |ui, dl| {
+                ui.slider_i32(dl, "value##hc", &mut wg.hitchance_override_value, 1, 100, "%", s);
+            });
+            ui.checkbox(dl, "min damage override", &mut wg.min_damage_override, s);
+            ui.popup(dl, "##mindamage_popup", POPUP_W, 56.0, s, |ui, dl| {
+                ui.slider_i32(dl, "value##md", &mut wg.min_damage_override_value, 0, 130, "", s);
+            });
+            ui.checkbox(dl, "extrapolation", &mut wg.extrapolation, s);
+            if wg.extrapolation {
+                ui.slider_i32(dl, "prediction ticks", &mut wg.extrapolation_ticks, 1, 12, "", s);
+            }
+            ui.checkbox(dl, "backtrack", &mut wg.backtrack, s);
+            if wg.backtrack {
+                ui.slider_i32(dl, "backtrack ticks", &mut wg.backtrack_ticks, 1, 12, "", s);
+            }
+        });
+
+        self.ui.child(dl, right_x, y + top_h + GAP, col_w, bottom_h, true, s, |ui, dl| {
+            ui.text(dl, "Runtime", s.text_dim, 1.0);
+            ui.separator(dl, s);
+            ui.text(dl, "Writes require Allow writes in Config.", s.text_dim, 0.9);
+            ui.text(dl, "Movement controls are in Misc.", s.text_dim, 0.9);
+        });
+    }
+
+    /// Legitbot panel limited to the aim-assist path implemented in combat.
+    fn draw_legitbot(&mut self, dl: &mut DrawList, state: &GameState, x: f32, y: f32, w: f32, h: f32, s: &Style) {
+        let mut settings = state.settings_mut();
+        let combat = &mut settings.combat;
+        // Seven rows (title, separator, combo, two checkboxes, slider,
+        // multicombo) no longer fit in the old 178px box and were clipped.
+        let master_h = 232.0;
+
+        self.ui.child(dl, x, y, w, master_h, true, s, |ui, dl| {
+            ui.text(dl, "Aimbot", s.text_dim, 1.0);
+            ui.separator(dl, s);
+            ui.combo(dl, "weapon group##legit", &mut combat.legit.weapons, &WEAPON_GROUPS, s);
+            let idx = combat.legit.weapons.min(5);
+            combat.legit.weapons = idx;
+            let wg = &mut combat.legit.groups[idx];
+            ui.checkbox(dl, "enabled", &mut combat.legit.enabled, s);
+            ui.checkbox(dl, "aimbot", &mut wg.aimbot, s);
+            ui.slider_f32(dl, "fov", &mut wg.fov, 0.5, 30.0, 1, " deg", s);
+            ui.slider_i32(dl, "smooth", &mut wg.smooth, 0, 100, "", s);
+            ui.multicombo(dl, "hitboxes", &mut wg.hitboxes, &LEGIT_HITBOXES, s);
+        });
+
+        self.ui.child(dl, x, y + master_h + GAP, w, (h - master_h - GAP).max(80.0), true, s, |ui, dl| {
+            ui.text(dl, "Runtime", s.text_dim, 1.0);
+            ui.separator(dl, s);
+            ui.text(dl, "Ragebot takes priority when it is enabled.", s.text_dim, 0.9);
+            ui.text(dl, "Writes require Allow writes in Config.", s.text_dim, 0.9);
+            ui.text(dl, "Triggerbot and recoil control are not wired yet.", s.text_dim, 0.9);
+        });
+    }
+
+    #[allow(dead_code)]
+    fn draw_ragebot_legacy(&mut self, dl: &mut DrawList, state: &GameState, x: f32, y: f32, w: f32, h: f32, s: &Style) {
         let mut settings = state.settings_mut();
         let combat = &mut settings.combat;
         let col_w = (w - GAP) * 0.5;
@@ -1342,7 +1608,8 @@ impl Menu {
         });
     }
 
-    fn draw_legitbot(&mut self, dl: &mut DrawList, state: &GameState, x: f32, y: f32, w: f32, h: f32, s: &Style) {
+    #[allow(dead_code)]
+    fn draw_legitbot_legacy(&mut self, dl: &mut DrawList, state: &GameState, x: f32, y: f32, w: f32, h: f32, s: &Style) {
         let mut settings = state.settings_mut();
         let combat = &mut settings.combat;
         let col_w = (w - GAP) * 0.5;
@@ -1450,6 +1717,7 @@ impl Menu {
         }
     }
 
+    #[allow(dead_code)] // Legacy C++ port; draw_esp_real is the active panel.
     fn draw_players(
         &mut self,
         dl: &mut DrawList,
@@ -1749,6 +2017,7 @@ impl Menu {
         dl.end_top();
     }
 
+    #[allow(dead_code)] // Legacy C++ port; draw_visuals_real is the active panel.
     fn draw_world(&mut self, dl: &mut DrawList, x: f32, y: f32, w: f32, h: f32, s: &Style) {
         let col_w = (w - GAP) * 0.5;
         let right_x = x + col_w + GAP;
@@ -1769,7 +2038,7 @@ impl Menu {
                     ui.checkbox(dl, "item glow", &mut self.ext.item_glow[ig], s);
                 });
 
-                self.ui.child(dl, right_x, y, col_w, h - 128.0, true, s, |ui, dl| {
+                self.ui.child(dl, right_x, y, col_w, h - 172.0, true, s, |ui, dl| {
                     ui.text(dl, "Projectiles", s.text_dim, 1.0);
                     ui.separator(dl, s);
                     ui.combo(dl, "group##proj_sel", &mut self.ext.proj_group, &PROJ_GROUPS, s);
@@ -1798,11 +2067,15 @@ impl Menu {
                     }
                 });
 
-                self.ui.child(dl, right_x, y + h - 116.0, col_w, 116.0, true, s, |ui, dl| {
+                self.ui.child(dl, right_x, y + h - 160.0, col_w, 160.0, true, s, |ui, dl| {
                     ui.text(dl, "Other", s.text_dim, 1.0);
                     ui.separator(dl, s);
                     ui.checkbox(dl, "bomb timer", &mut self.ext.bomb_timer, s);
                     ui.checkbox(dl, "spectator list", &mut self.ext.spectator_list, s);
+                    ui.checkbox(dl, "fire area", &mut self.ext.fire_area, s);
+                    ui.popup(dl, "##fire_area_popup", POPUP_W, 56.0, s, |ui, dl| {
+                        ui.color_picker(dl, "color##fire", &mut self.ext.fire_area_col, s);
+                    });
                 });
             }
             1 => {
@@ -1824,6 +2097,10 @@ impl Menu {
                     ui.popup(dl, "##world_material_popup", POPUP_W, 88.0, s, |ui, dl| {
                         ui.combo(dl, "surface", &mut self.ext.world_mat_type, &SURFACE_PRESETS, s);
                         ui.color_picker(dl, "tint##world_material", &mut self.ext.world_mat_col, s);
+                    });
+                    ui.checkbox(dl, "world color", &mut self.ext.world_color, s);
+                    ui.popup(dl, "##world_color_popup", POPUP_W, 56.0, s, |ui, dl| {
+                        ui.color_picker(dl, "color##world", &mut self.ext.world_col, s);
                     });
                     ui.checkbox(dl, "lighting", &mut self.ext.lighting, s);
                     ui.popup(dl, "##lighting_popup", POPUP_W, 84.0, s, |ui, dl| {
@@ -1919,6 +2196,7 @@ impl Menu {
         }
     }
 
+    #[allow(dead_code)] // No skin backend yet; the tab shows an empty pane.
     fn draw_skins(&mut self, dl: &mut DrawList, x: f32, y: f32, w: f32, h: f32, s: &Style) {
         let subtab = self.subtab.min(3);
         let cols = 5usize;
@@ -2059,6 +2337,7 @@ impl Menu {
         });
     }
 
+    #[allow(dead_code)] // Legacy C++ port; draw_misc_real is the active panel.
     fn draw_misc(&mut self, dl: &mut DrawList, state: &GameState, x: f32, y: f32, w: f32, h: f32, s: &Style) {
         let col_w = (w - GAP) * 0.5;
         let right_x = x + col_w + GAP;

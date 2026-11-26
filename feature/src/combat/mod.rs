@@ -76,6 +76,8 @@ pub fn run(state: &GameState, tick: u32) -> Decision {
         min_damage,
         ticks,
         use_multipoints,
+        point_scale,
+        dynamic_pointscale,
         backtrack,
         backtrack_ticks,
         hitboxes,
@@ -93,23 +95,32 @@ pub fn run(state: &GameState, tick: u32) -> Decision {
             } else {
                 group.min_damage
             },
-            group.extrapolation_ticks.max(0) as usize,
+            if group.extrapolation { group.extrapolation_ticks.max(0) as usize } else { 0 },
             group.pointscale > 0.0 || group.hitboxes.iter().filter(|b| **b).count() > 1,
+            group.pointscale / 100.0,
+            group.dynamic_pointscale,
             group.backtrack,
             group.backtrack_ticks.max(1) as usize,
             group.hitboxes,
         )
     } else {
         let legit = combat.legit.group();
+        if !legit.aimbot {
+            return out;
+        }
+        let mut hitboxes = [false; 6];
+        hitboxes[..5].copy_from_slice(&legit.hitboxes);
         (
             legit.fov,
             60,
             1,
             0,
             false,
+            0.0,
+            false,
             false,
             1,
-            [true, true, false, false, false, false],
+            hitboxes,
         )
     };
     {
@@ -141,11 +152,23 @@ pub fn run(state: &GameState, tick: u32) -> Decision {
     };
     let predicted = extrapolation::extrapolate(base, velocity, ticks, 1.0 / 64.0);
     let points = hitbox::extract(best.address, &hitboxes);
-    let radius = if use_multipoints { 6.0 } else { 2.0 };
-    let candidates = if points.is_empty() {
-        multipoint::build(predicted, radius, 1.0 - hitchance_target as f32 / 200.0)
+    let radius = if use_multipoints {
+        multipoint::POINT_RADIUS
     } else {
-        multipoint::build(points[0], radius, 1.0 - hitchance_target as f32 / 200.0)
+        2.0
+    };
+    let mut scale = if use_multipoints {
+        point_scale
+    } else {
+        multipoint::MIN_SCALE
+    };
+    if dynamic_pointscale {
+        scale = multipoint::dynamic_scale(best.origin.distance_to(eye), scale);
+    }
+    let candidates = if points.is_empty() {
+        multipoint::build(predicted, radius, scale)
+    } else {
+        multipoint::build(points[0], radius, scale)
     };
     out.point = candidates.first().copied().unwrap_or(predicted);
     out.angles = angle_to_point(eye, out.point);

@@ -38,6 +38,14 @@ pub const DW_PREDICTION: usize = 0x255E9C0;
 pub const DW_GLOW_MANAGER: usize = 0x255B110;
 pub const DW_INPUT_SYSTEM: usize = 0x46BC0; // inputsystem.dll
 
+// C_Inferno (local schema dump 2026-11-24): fire hull, read-only overlay.
+pub const INFERNO_FIRE_POSITIONS: usize = 0x1108; // VectorWS[64], stride 0xC
+pub const INFERNO_FIRE_COUNT: usize = 0x1A48; // int32
+pub const INFERNO_LIFETIME: usize = 0x1A50; // float32
+pub const INFERNO_MAX_FIRES: usize = 64;
+// CEntityIdentity::m_designerName — CUtlSymbolLarge (const char*).
+pub const ENTITY_DESIGNER_NAME: usize = 0x20;
+
 pub const INPUT_RELATIVE_MOUSE_FLAG_OFFSET: usize = 84;
 pub const INPUT_SET_RELATIVE_MOUSE_VFUNC: usize = 76;
 

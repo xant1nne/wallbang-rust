@@ -23,12 +23,13 @@ use windows::Win32::{
             IMAGE_BASE_RELOCATION, IMAGE_DOS_HEADER, IMAGE_IMPORT_DESCRIPTOR,
             IMAGE_REL_BASED_DIR64, IMAGE_TLS_DIRECTORY64,
         },
-        Threading::TlsAlloc,
         WindowsProgramming::IMAGE_THUNK_DATA64,
     },
 };
 
 use windows::core::PCSTR;
+
+use crate::entry_call;
 
 const DOS_MAGIC: u16 = 0x5A4D; // 'MZ'
 const PE_MAGIC: u32 = 0x0000_4550; // 'PE\0\0'
@@ -433,11 +434,11 @@ pub unsafe fn map_image(handle: HANDLE, dll_bytes: &[u8]) -> Result<MappedImage,
                 image_size,
             )
             .ok_or(MapError::Tls)?;
-            let index = TlsAlloc();
-            if index != u32::MAX {
-                write_remote(handle, base + index_rva as usize, &index.to_le_bytes())
-                    .map_err(|_| MapError::Tls)?;
-            }
+            // The slot belongs to the game process. Calling TlsAlloc here would
+            // write a loader-process index into the mapped image's CRT state.
+            let index = entry_call::alloc_remote_tls_index(handle).map_err(|_| MapError::Tls)?;
+            write_remote(handle, base + index_rva as usize, &index.to_le_bytes())
+                .map_err(|_| MapError::Tls)?;
         }
 
         if tls_dir.AddressOfCallBacks != 0 {
@@ -463,6 +464,11 @@ pub unsafe fn map_image(handle: HANDLE, dll_bytes: &[u8]) -> Result<MappedImage,
             }
         }
     }
+
+    // Windows runs TLS callbacks after imports and before the entry point.
+    // Rust's CRT registers callbacks here; skipping them leaves the mapped
+    // allocator/TLS state half-initialised and corrupts the host heap.
+    entry_call::run_remote_tls_callbacks(handle, base as usize, &tls).map_err(|_| MapError::Tls)?;
 
     Ok(MappedImage {
         base: remote_base,

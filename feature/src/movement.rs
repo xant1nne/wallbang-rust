@@ -91,7 +91,7 @@ fn run_autostrafe(cmd: UserCmd, autostrafe: bool) {
         return;
     }
     let mut mouse_delta = cmd.mouse_dx();
-    let csgo_input = unsafe { modules::csgo_input() }.unwrap_or(0);
+    let csgo_input = modules::csgo_input().unwrap_or(0);
     if mouse_delta == 0 && csgo_input != 0 {
         mouse_delta =
             unsafe { memory::read::<i32>(csgo_input + CSGO_INPUT_MOUSE_DELTA_X) }.unwrap_or(0);

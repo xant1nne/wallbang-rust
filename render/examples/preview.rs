@@ -219,7 +219,28 @@ fn main() {
         750,
         0,
         0,
-        r"C:\wallbang-rust\render\src\menu_preview.png",
+        r"C:\wallbang-rust\target\tmp\menu_preview.png",
+    );
+    // Legitbot tab (real aim-assist panel)
+    {
+        let mut s = state.settings_mut();
+        s.combat.legit.enabled = true;
+        s.combat.legit.weapons = 2;
+        s.combat.legit.groups[2].aimbot = true;
+        s.combat.legit.groups[2].fov = 4.0;
+        s.combat.legit.groups[2].smooth = 12;
+    }
+    render_one(
+        &mut menu,
+        &state,
+        atlas,
+        aw,
+        ah,
+        1320,
+        750,
+        1,
+        0,
+        r"C:\wallbang-rust\target\tmp\menu_preview_legit.png",
     );
     // Players tab + floating 3D ESP preview panel
     state.settings_mut().menu.x = 236.0;
@@ -233,7 +254,7 @@ fn main() {
         750,
         2,
         0,
-        r"C:\wallbang-rust\render\src\menu_preview_players.png",
+        r"C:\wallbang-rust\target\tmp\menu_preview_players.png",
     );
     // Skins grid
     state.settings_mut().menu.x = 240.0;
@@ -247,6 +268,14 @@ fn main() {
         750,
         4,
         0,
-        r"C:\wallbang-rust\render\src\menu_preview_skins.png",
+        r"C:\wallbang-rust\target\tmp\menu_preview_skins.png",
     );
+    // Visuals / World tabs (layout regression checks)
+    for (subtab, path) in [
+        (0, r"C:\wallbang-rust\target\tmp\menu_preview_world_items.png"),
+        (1, r"C:\wallbang-rust\target\tmp\menu_preview_world_scene.png"),
+        (2, r"C:\wallbang-rust\target\tmp\menu_preview_world_weather.png"),
+    ] {
+        render_one(&mut menu, &state, atlas, aw, ah, 1320, 750, 3, subtab, path);
+    }
 }

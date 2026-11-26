@@ -122,9 +122,9 @@ fn draw_targets(dl: &mut DrawList, state: &GameState, cfg: &EspPlayerSettings, t
 
 pub fn draw_esp(dl: &mut DrawList, state: &GameState) {
     let esp = state.settings().esp.clone();
-    if !esp.enabled {
-        return;
+    if esp.enabled {
+        draw_targets(dl, state, &esp.enemies, false);
+        draw_targets(dl, state, &esp.teammates, true);
     }
-    draw_targets(dl, state, &esp.enemies, false);
-    draw_targets(dl, state, &esp.teammates, true);
+    crate::world::draw_world_overlay(dl, state);
 }

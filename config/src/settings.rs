@@ -102,19 +102,37 @@ pub struct AmbienceSettings {
     pub world_material: bool,
     pub world_material_type: usize,
     pub world_material_color: Rgba,
+    /// Rewrites world-node tint colors during scene draw. Guarded + restored.
+    pub world_color: bool,
+    pub world_color_tint: Rgba,
     pub lighting: bool,
     pub lighting_intensity: f32,
     pub lighting_color: Rgba,
+    /// Skip the scene-system skybox draw entirely (3D skybox removal).
+    pub remove_3d_skybox: bool,
+    /// Skip the fog setup pass (skybox/global fog removal).
+    pub remove_skybox_fog: bool,
     pub fog: bool,
     pub fog_density: f32,
     pub fog_color: Rgba,
-    /// Burning-world ambience (fire barrels, molotov residue). Stored even
-    /// while the backend is inactive, same as the rest of this block.
-    pub fire_area: bool,
+    /// Engine-side `fog_override_end` used when `fog` is on.
+    pub fog_end: f32,
     pub weather_on: bool,
-    /// 0 snow, 1 rain, 2 stars (matches the Visuals combo).
+    /// 0 snow, 1 rain, 2 stars (matches the Visuals combo). Only rain has a
+    /// confirmed engine cvar backend; the other two stay UI-only and inactive.
     pub weather: usize,
     pub weather_color: Rgba,
+    /// `r_RainParticleDensity` value; only used for the rain backend.
+    pub weather_density: f32,
+    pub bloom: bool,
+    pub bloom_strength: f32,
+    pub gamma: bool,
+    pub gamma_value: f32,
+    pub dof: bool,
+    pub dof_near_blurry: f32,
+    pub dof_far_blurry: f32,
+    /// Reduces smoke rendering through the confirmed smoke cvars.
+    pub smoke_removal: bool,
 }
 
 impl Default for AmbienceSettings {
@@ -129,16 +147,29 @@ impl Default for AmbienceSettings {
             world_material: false,
             world_material_type: 0,
             world_material_color: [200, 200, 200, 255],
+            world_color: false,
+            world_color_tint: [200, 220, 255, 255],
             lighting: false,
             lighting_intensity: 1.0,
             lighting_color: [255, 255, 255, 255],
+            remove_3d_skybox: false,
+            remove_skybox_fog: false,
             fog: false,
             fog_density: 0.25,
             fog_color: [180, 195, 215, 255],
-            fire_area: false,
+            fog_end: 4000.0,
             weather_on: false,
             weather: 0,
             weather_color: [220, 230, 245, 255],
+            weather_density: 1000.0,
+            bloom: false,
+            bloom_strength: 0.5,
+            gamma: false,
+            gamma_value: 2.2,
+            dof: false,
+            dof_near_blurry: 10.0,
+            dof_far_blurry: 40.0,
+            smoke_removal: false,
         }
     }
 }
@@ -265,6 +296,9 @@ impl Default for ItemEspSettings {
 pub struct VisualSettings {
     pub chams: ChamsSettings,
     pub grenade: GrenadeSettings,
+    /// Read-only inferno/fire hull overlay.
+    pub fire_area: bool,
+    pub fire_area_color: Rgba,
     pub ambience: AmbienceSettings,
     pub viewmodel: ViewmodelSettings,
     pub tracers: TracerSettings,
@@ -277,6 +311,8 @@ impl Default for VisualSettings {
         Self {
             chams: ChamsSettings::default(),
             grenade: GrenadeSettings::default(),
+            fire_area: false,
+            fire_area_color: [255, 120, 60, 180],
             ambience: AmbienceSettings::default(),
             viewmodel: ViewmodelSettings::default(),
             tracers: TracerSettings::default(),
@@ -434,7 +470,7 @@ impl Default for AutobuySettings {
     }
 }
 
-/// Hit/death sounds. The sound assets are ported from wallbang-main-clone.
+/// Hit/death sounds. Sound assets are local to this project.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AudioSettings {
@@ -1129,7 +1165,6 @@ mod tests {
         settings.visual.chams.enemy.primary.material = 6;
         settings.visual.chams.enemy.primary.color = [12, 34, 56, 78];
         settings.visual.ambience.skybox_idx = 3;
-        settings.visual.ambience.fire_area = true;
         settings.visual.ambience.weather_on = true;
         settings.visual.tracers.hit_marker = true;
         settings.skins.applied.push(AppliedSkin {
@@ -1151,7 +1186,6 @@ mod tests {
         assert_eq!(loaded.visual.chams.enemy.primary.material, 6);
         assert_eq!(loaded.visual.chams.enemy.primary.color, [12, 34, 56, 78]);
         assert_eq!(loaded.visual.ambience.skybox_idx, 3);
-        assert!(loaded.visual.ambience.fire_area);
         assert!(loaded.visual.tracers.hit_marker);
         assert_eq!(loaded.skins.applied.len(), 1);
         assert_eq!(loaded.skins.applied[0].seed, 42);

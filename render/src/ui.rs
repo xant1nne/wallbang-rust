@@ -106,6 +106,9 @@ pub struct Ui {
     prev_keys: [bool; 256],
     scroll: HashMap<u64, f32>,
     scroll_max: HashMap<u64, f32>,
+    /// Popups grow to fit their content. The first frame uses the caller's
+    /// hint; every later frame reuses the measured height.
+    popup_heights: HashMap<String, f32>,
     wheel: f32,
 }
 
@@ -144,6 +147,7 @@ impl Ui {
             prev_keys: [false; 256],
             scroll: HashMap::new(),
             scroll_max: HashMap::new(),
+            popup_heights: HashMap::new(),
             wheel: 0.0,
         }
     }
@@ -206,6 +210,7 @@ impl Ui {
     pub fn overlay_blocking(&self) -> bool {
         !self.in_popup
             && (self.open_popup.is_some()
+                || self.open_sub_popup.is_some()
                 || self.open_list.is_some()
                 || self.open_color.is_some())
     }
@@ -766,9 +771,11 @@ impl Ui {
     ) -> bool {
         let (x, y) = self.next_pos();
         let w = self.row_w;
-        let row_h = 16.0;
-        let sw_w = 24.0;
-        let sw_h = 12.0;
+        // Match the checkbox row height so labels do not collide with the next
+        // widget. The swatch stays right-aligned.
+        let row_h = 24.0;
+        let sw_w = 28.0;
+        let sw_h = 14.0;
         let is_open = self.open_color.as_deref() == Some(label);
         let hover = (!self.overlay_blocking() || is_open) && self.inside(x, y, w, row_h);
         let shown = display_label(label);
@@ -777,7 +784,7 @@ impl Ui {
             x,
             (y + (row_h - th) * 0.5).floor(),
             shown,
-            if hover { s.text } else { s.text_dim },
+            if hover || is_open { s.text } else { s.text_dim },
             1.0,
         );
         let sx = x + w - sw_w;
@@ -793,11 +800,19 @@ impl Ui {
             return false;
         }
         let mut changed = false;
-        let pop_w = 190.0;
-        let pop_h = 128.0;
+        let pop_w = w.min(190.0).max(120.0);
+        // Four slider rows (label + track) plus padding. The old 128px popup
+        // cut the alpha slider off and looked like a missing color picker.
+        let pop_h = 168.0;
         let (sw, sh) = dl.size();
-        let px = (x + w + 6.0).min(sw - pop_w - 6.0).max(6.0);
-        let py = y.min(sh - pop_h - 6.0).max(6.0);
+        // Drop down under the row, inside the column that owns the widget.
+        // Never open sideways: that overlapped the other column/preview panel.
+        let px = x.min(sw - pop_w - 4.0).max(4.0);
+        let mut py = y + row_h + 4.0;
+        if py + pop_h > sh - 4.0 {
+            py = y - pop_h - 4.0;
+        }
+        let py = py.min((sh - pop_h - 4.0).max(4.0)).max(4.0);
         dl.begin_top();
         dl.rect_rounded(px, py, pop_w, pop_h, WIDGET_ROUNDING, s.dark);
         dl.outline_rounded(px, py, pop_w, pop_h, WIDGET_ROUNDING, 1.0, s.border);
@@ -921,11 +936,15 @@ impl Ui {
         if !self.last_id.is_empty() {
             self.popup_owners.insert(self.last_id.clone());
         }
-        let gear_hit = self.clicked
-            && self.inside(anchor.0 + anchor.2 - 18.0, anchor.1, 18.0, anchor.3);
-        let rmb_hit = self.right_clicked && self.inside(anchor.0, anchor.1, anchor.2, anchor.3);
-
         let is_nested = self.in_popup;
+        let can_open = !self.overlay_blocking() || is_nested;
+        let gear_hit = can_open
+            && self.clicked
+            && self.inside(anchor.0 + anchor.2 - 18.0, anchor.1, 18.0, anchor.3);
+        let rmb_hit = can_open
+            && self.right_clicked
+            && self.inside(anchor.0, anchor.1, anchor.2, anchor.3);
+
         if gear_hit || rmb_hit {
             if is_nested {
                 if self.open_sub_popup.as_deref() == Some(id) {
@@ -951,29 +970,33 @@ impl Ui {
         }
 
         let (screen_w, screen_h) = dl.size();
-        // Drop-down style: right-aligned under the row, kept inside the screen.
+        // Drop-down style: right-aligned under the row. The measured height
+        // from the previous frame keeps long popups from spilling over rows.
+        let popup_h = self.popup_heights.get(id).copied().unwrap_or(h).max(h);
         let x = (anchor.0 + anchor.2 - w)
             .max(anchor.0)
             .min(screen_w - w - 6.0)
             .max(6.0);
         let y = (anchor.1 + anchor.3 + 4.0)
-            .min(screen_h - h - 6.0)
+            .min(screen_h - popup_h - 6.0)
             .max(6.0);
         dl.begin_top();
-        dl.rect_rounded(x, y, w, h, WIDGET_ROUNDING, s.dark);
-        dl.outline_rounded(x, y, w, h, WIDGET_ROUNDING, 1.0, s.border);
+        dl.rect_rounded(x, y, w, popup_h, WIDGET_ROUNDING, s.dark);
+        dl.outline_rounded(x, y, w, popup_h, WIDGET_ROUNDING, 1.0, s.border);
         let saved = (self.cursor, self.row_w, self.in_popup);
         self.cursor = Vec2::new(x + 10.0, y + 10.0);
         self.row_w = w - 20.0;
         self.in_popup = true;
         let out = f(self, dl);
+        let measured = (self.cursor.y - (y + 10.0)).max(popup_h);
+        self.popup_heights.insert(id.to_string(), measured);
         self.cursor = saved.0;
         self.row_w = saved.1;
         self.in_popup = saved.2;
         dl.end_top();
 
         if self.clicked
-            && !self.inside(x, y, w, h)
+            && !self.inside(x, y, w, popup_h)
             && !self.inside(anchor.0, anchor.1, anchor.2, anchor.3)
             && (is_nested || self.open_sub_popup.is_none())
         {

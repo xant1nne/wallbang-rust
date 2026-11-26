@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use wallbang_config::constants::DEFAULT_PROFILE;
 use wallbang_config::storage::{default_dir, Storage};
-use wallbang_core::hooks::{parse_prefix, PrologueHook, VTableHook};
+use wallbang_core::hooks::{parse_prefix, CallHook, PrologueHook, VTableHook};
+use wallbang_core::usercmd::UserCmd;
 use wallbang_lua::Runtime;
 
 const DLL_PROCESS_ATTACH: u32 = 1;
@@ -18,17 +19,17 @@ static INITIALIZED: OnceLock<()> = OnceLock::new();
 static LUA: Mutex<Option<Runtime>> = Mutex::new(None);
 static CREATE_MOVE: Mutex<Option<PrologueHook>> = Mutex::new(None);
 static CREATE_MOVE_TRAMPOLINE: AtomicUsize = AtomicUsize::new(0);
+static AUTO_MAKE_USER_CMD: Mutex<Option<CallHook>> = Mutex::new(None);
+static AUTO_MAKE_USER_CMD_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static FRAME_STAGE: Mutex<Option<VTableHook>> = Mutex::new(None);
 static FRAME_STAGE_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
-static ENABLE_CURSOR_HOOK: Mutex<Option<VTableHook>> = Mutex::new(None);
-static ENABLE_CURSOR_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
-/// i_input_system::EnableCursor — Celerity hooks the same slot (vmt index 76).
-const ENABLE_CURSOR_VFUNC: usize = 76;
 static FRAMES: AtomicU32 = AtomicU32::new(0);
 
 type CreateMoveFn = unsafe extern "system" fn(*mut c_void, u32, bool) -> f64;
 type FrameStageNotifyFn = unsafe extern "C" fn(usize, i32);
-type EnableCursorFn = unsafe extern "system" fn(*mut c_void, bool) -> *mut c_void;
+/// IDA (client.dll build 14201): `sub_1809447B0(rcx, edx)` — edx is the
+/// command number, and the return is the `CUserCmd*` stored by the caller.
+type AutoMakeUserCmdFn = unsafe extern "system" fn(usize, usize) -> usize;
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -73,39 +74,38 @@ unsafe extern "system" fn hk_create_move(this: *mut c_void, slot: u32, active: b
     result
 }
 
-/// i_input_system vfunc 76 (EnableCursor): force the cursor enabled while the
-/// menu is open. This is what actually restores the OS cursor in game — Win32
-/// ShowCursor alone loses the fight because the engine disables it every frame.
-unsafe extern "system" fn hk_enable_cursor(this: *mut c_void, active: bool) -> *mut c_void {
-    let original = ENABLE_CURSOR_ORIGINAL.load(Ordering::Relaxed);
+/// Captures the real `CUserCmd*` returned by AutoMakeUserCmd and runs the
+/// Celerity movement port on the same game tick, before the caller serializes
+/// and sends the command. The five-byte call hook keeps the caller's stack
+/// intact; calling the original by address avoids copying a relative prologue.
+unsafe extern "system" fn hk_auto_make_user_cmd(input: usize, command_number: usize) -> usize {
+    let original = AUTO_MAKE_USER_CMD_ORIGINAL.load(Ordering::Relaxed);
     if original == 0 {
-        return std::ptr::null_mut();
+        return 0;
     }
-    let original: EnableCursorFn = std::mem::transmute(original);
-    if wallbang_render::is_menu_open() {
-        return original(this, true);
+    let original: AutoMakeUserCmdFn = std::mem::transmute(original);
+    let address = original(input, command_number);
+    if address != 0 {
+        if let Some(cmd) = UserCmd::from_raw(address) {
+            wallbang_feature::combat::cmd::on_create_move(cmd, &wallbang_core::state());
+        }
+        static CAPTURE_LOGS: AtomicUsize = AtomicUsize::new(0);
+        if CAPTURE_LOGS.fetch_add(1, Ordering::Relaxed) < 3 {
+            diag::log(&format!(
+                "AutoMakeUserCmd: cmd=0x{:X} command_number={} base=0x{:X}",
+                address,
+                command_number,
+                cmd_base(address)
+            ));
+        }
     }
-    original(this, active)
+    address
 }
 
-fn install_enable_cursor() {
-    let Some(instance) = wallbang_core::modules::input_system() else {
-        diag::log("EnableCursor: input system not resolved");
-        return;
-    };
-    let Some(hook) = (unsafe {
-        VTableHook::install(instance, ENABLE_CURSOR_VFUNC, hk_enable_cursor as *const () as usize)
-    }) else {
-        diag::log("EnableCursor: vtable hook failed");
-        return;
-    };
-    diag::log(&format!(
-        "EnableCursor: hooked vfunc={} original=0x{:X}",
-        ENABLE_CURSOR_VFUNC,
-        hook.original()
-    ));
-    ENABLE_CURSOR_ORIGINAL.store(hook.original(), Ordering::SeqCst);
-    *ENABLE_CURSOR_HOOK.lock() = Some(hook);
+#[inline]
+fn cmd_base(address: usize) -> usize {
+    unsafe { wallbang_core::memory::read_ptr(address + wallbang_config::offsets::CMD_BASE_CMD) }
+        .unwrap_or(0)
 }
 
 /// Panorama-скрипт отправляется из UI-потока: stage 6 в матче, любой stage в меню.
@@ -185,10 +185,53 @@ fn install_create_move() {    let Some(address) = wallbang_core::pattern::scan_m
     *CREATE_MOVE.lock() = Some(hook);
 }
 
+/// Hooks the verified `AutoMakeUserCmd` call site. The call target is derived
+/// from the instruction itself and cross-checked against the offline-verified
+/// RVA, so a client update fails closed instead of calling a random address.
+fn install_auto_make_user_cmd() {
+    let module_base = wallbang_core::modules::module_base("client.dll").unwrap_or(0);
+    let Some(call_site) = wallbang_core::pattern::scan_module(
+        "client.dll",
+        wallbang_config::signatures::SIG_AUTO_MAKE_USER_CMD_CALL,
+    ) else {
+        diag::log("AutoMakeUserCmd: call site signature not found");
+        return;
+    };
+    let rel = match unsafe { wallbang_core::memory::read::<i32>(call_site + 1) } {
+        Some(rel) => rel,
+        None => {
+            diag::log("AutoMakeUserCmd: cannot read call rel32");
+            return;
+        }
+    };
+    let original = (call_site + 5).wrapping_add(rel as usize);
+    let expected = module_base.wrapping_add(wallbang_config::signatures::AUTO_MAKE_USER_CMD_RVA);
+    if module_base != 0 && original != expected {
+        diag::log(&format!(
+            "AutoMakeUserCmd: target mismatch original=0x{:X} expected=0x{:X}",
+            original, expected
+        ));
+        return;
+    }
+    let Some(hook) = (unsafe {
+        CallHook::install(call_site, hk_auto_make_user_cmd as *const () as usize)
+    }) else {
+        diag::log("AutoMakeUserCmd: call hook install failed");
+        return;
+    };
+    AUTO_MAKE_USER_CMD_ORIGINAL.store(original, Ordering::SeqCst);
+    *AUTO_MAKE_USER_CMD.lock() = Some(hook);
+    diag::log(&format!(
+        "AutoMakeUserCmd: hooked call=0x{:X} original=0x{:X}",
+        call_site, original
+    ));
+}
+
 fn log_signatures() {
     use wallbang_config::signatures as sig;
     let checks = [
         ("SIG_WORLD_SPACE_BONES", sig::SIG_WORLD_SPACE_BONES),
+        ("SIG_AUTO_MAKE_USER_CMD_CALL", sig::SIG_AUTO_MAKE_USER_CMD_CALL),
         ("SIG_CMD_SERIALIZE", sig::SIG_CMD_SERIALIZE),
         ("SIG_CMD_SET_MESSAGE_DATA", sig::SIG_CMD_SET_MESSAGE_DATA),
         ("SIG_CMD_STRING_COPY", sig::SIG_CMD_STRING_COPY),
@@ -273,6 +316,12 @@ pub fn initialize() -> Result<(), String> {
     load_startup_profile();
 
     wallbang_core::mutation::set_allowed(false);
+    let cvar_count = wallbang_feature::cvar::init();
+    diag::log(&format!(
+        "cvar backend: {} cvars, overrides={}",
+        cvar_count,
+        wallbang_feature::cvar::active_overrides()
+    ));
     if let Err(error) = unsafe { wallbang_render::init() } {
         diag::log(&format!("render init FAILED: {error}"));
         return Err(error);
@@ -280,11 +329,24 @@ pub fn initialize() -> Result<(), String> {
     diag::log("render init: ok (overlay thread started)");
     wallbang_render::native_preview::init();
     install_frame_stage_notify();
-    install_enable_cursor();
+    // The unverified inputsystem vfunc 76 hook is disabled: offline inspection
+    // showed slot 76 contains inline code bytes, not a function pointer, and a
+    // live run logged original=0x48000025708F8B48. Menu cursor is handled by
+    // hk_wndproc + update_menu_cursor through Win32 instead.
 
     wallbang_render::set_overlay(wallbang_feature::draw_esp);
     wallbang_render::set_frame_callback(on_frame);
     install_create_move();
+    install_auto_make_user_cmd();
+    // Branch-safe scene-draw vtable slot hook. It no longer copies the
+    // scenesystem.dll prologue, and it fails closed on an unexpected slot value.
+    wallbang_feature::world::install();
+    diag::log(&format!(
+        "world hooks: color={} skybox={} fog={}",
+        if wallbang_feature::world::installed() { "ok" } else { "off" },
+        if wallbang_feature::world::skybox_installed() { "ok" } else { "off" },
+        if wallbang_feature::world::fog_installed() { "ok" } else { "off" },
+    ));
 
     let state = wallbang_core::state();
     state.refresh();
@@ -378,8 +440,13 @@ fn on_frame() {
     // Пользовательский тумблер "allow writes" в Misc -> MutationGuard.
     let allowed = wallbang_core::state().settings().misc.allow_writes;
     wallbang_core::mutation::set_allowed(allowed);
+    if !allowed {
+        wallbang_feature::cvar::restore_all();
+    }
     // Client-side visuals that only need entity writes (radar reveal).
-    wallbang_feature::visuals::on_frame(&wallbang_core::state());
+    let state = wallbang_core::state();
+    wallbang_feature::visuals::on_frame(&state);
+    wallbang_feature::c3::sync(&state);
     if let Some(runtime) = LUA.lock().as_ref() {
         let _ = runtime.fire("render", &[]);
     }
@@ -412,6 +479,12 @@ pub extern "system" fn wb_shutdown() {
     if let Some(mut hook) = CREATE_MOVE.lock().take() {
         unsafe { hook.remove() };
     }
+    AUTO_MAKE_USER_CMD_ORIGINAL.store(0, Ordering::SeqCst);
+    if let Some(mut hook) = AUTO_MAKE_USER_CMD.lock().take() {
+        unsafe { hook.remove() };
+    }
+    wallbang_feature::cvar::shutdown();
+    wallbang_feature::world::shutdown();
     unsafe { wallbang_render::shutdown() };
 }
 

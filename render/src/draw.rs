@@ -28,7 +28,7 @@ struct ClipRect {
 pub struct DrawList {
     vertices: Vec<Vertex>,
     top_vertices: Vec<Vertex>,
-    in_top: bool,
+    top_depth: usize,
     clip_stack: Vec<ClipRect>,
     alpha_stack: Vec<f32>,
     width: f32,
@@ -43,7 +43,7 @@ impl DrawList {
         Self {
             vertices: Vec::with_capacity(16_384),
             top_vertices: Vec::with_capacity(4_096),
-            in_top: false,
+            top_depth: 0,
             clip_stack: Vec::with_capacity(8),
             alpha_stack: Vec::with_capacity(4),
             width: 1920.0,
@@ -59,19 +59,19 @@ impl DrawList {
         self.height = height.max(1.0);
         self.vertices.clear();
         self.top_vertices.clear();
-        self.in_top = false;
+        self.top_depth = 0;
         self.clip_stack.clear();
         self.alpha_stack.clear();
     }
 
     #[inline]
     pub fn begin_top(&mut self) {
-        self.in_top = true;
+        self.top_depth = self.top_depth.saturating_add(1);
     }
 
     #[inline]
     pub fn end_top(&mut self) {
-        self.in_top = false;
+        self.top_depth = self.top_depth.saturating_sub(1);
     }
 
     #[inline]
@@ -82,7 +82,7 @@ impl DrawList {
             self.vertices.extend_from_slice(&self.top_vertices[..count]);
             self.top_vertices.clear();
         }
-        self.in_top = false;
+        self.top_depth = 0;
     }
 
     #[inline]
@@ -155,7 +155,7 @@ impl DrawList {
     fn push(&mut self, x: f32, y: f32, u: f32, v: f32, c: Color) {
         let c = self.apply_alpha(c);
         let (nx, ny) = self.ndc(x, y);
-        let target = if self.in_top {
+        let target = if self.top_depth > 0 {
             &mut self.top_vertices
         } else {
             &mut self.vertices
@@ -177,13 +177,17 @@ impl DrawList {
 
     #[inline]
     fn tri_solid(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, x2: f32, y2: f32, c: Color) {
-        if let Some(clip) = self.clip_stack.last() {
-            let min_x = x0.min(x1).min(x2);
-            let max_x = x0.max(x1).max(x2);
-            let min_y = y0.min(y1).min(y2);
-            let max_y = y0.max(y1).max(y2);
-            if max_x <= clip.x0 || min_x >= clip.x1 || max_y <= clip.y0 || min_y >= clip.y1 {
-                return;
+        // Top-layer commands are popups/tooltips: they must be able to escape
+        // the scroll clip of the child that opened them.
+        if self.top_depth == 0 {
+            if let Some(clip) = self.clip_stack.last() {
+                let min_x = x0.min(x1).min(x2);
+                let max_x = x0.max(x1).max(x2);
+                let min_y = y0.min(y1).min(y2);
+                let max_y = y0.max(y1).max(y2);
+                if max_x <= clip.x0 || min_x >= clip.x1 || max_y <= clip.y0 || min_y >= clip.y1 {
+                    return;
+                }
             }
         }
         let (u, v) = (self.white_u, self.white_v);
@@ -211,30 +215,32 @@ impl DrawList {
         let mut y0 = y;
         let mut x1 = x + w;
         let mut y1 = y + h;
-        if let Some(clip) = self.clip_stack.last().copied() {
-            if x1 <= clip.x0 || x0 >= clip.x1 || y1 <= clip.y0 || y0 >= clip.y1 {
-                return;
-            }
-            let du = (u1 - u0) / w;
-            let dv = (v1 - v0) / h;
-            if x0 < clip.x0 {
-                u0 += (clip.x0 - x0) * du;
-                x0 = clip.x0;
-            }
-            if x1 > clip.x1 {
-                u1 -= (x1 - clip.x1) * du;
-                x1 = clip.x1;
-            }
-            if y0 < clip.y0 {
-                v0 += (clip.y0 - y0) * dv;
-                y0 = clip.y0;
-            }
-            if y1 > clip.y1 {
-                v1 -= (y1 - clip.y1) * dv;
-                y1 = clip.y1;
-            }
-            if x1 <= x0 || y1 <= y0 {
-                return;
+        if self.top_depth == 0 {
+            if let Some(clip) = self.clip_stack.last().copied() {
+                if x1 <= clip.x0 || x0 >= clip.x1 || y1 <= clip.y0 || y0 >= clip.y1 {
+                    return;
+                }
+                let du = (u1 - u0) / w;
+                let dv = (v1 - v0) / h;
+                if x0 < clip.x0 {
+                    u0 += (clip.x0 - x0) * du;
+                    x0 = clip.x0;
+                }
+                if x1 > clip.x1 {
+                    u1 -= (x1 - clip.x1) * du;
+                    x1 = clip.x1;
+                }
+                if y0 < clip.y0 {
+                    v0 += (clip.y0 - y0) * dv;
+                    y0 = clip.y0;
+                }
+                if y1 > clip.y1 {
+                    v1 -= (y1 - clip.y1) * dv;
+                    y1 = clip.y1;
+                }
+                if x1 <= x0 || y1 <= y0 {
+                    return;
+                }
             }
         }
         self.push(x0, y0, u0, v0, c);
