@@ -1,6 +1,8 @@
 // Config block: ядро не знает о UI; все используемые офсеты алиасируются из wallbang_config::offsets.
 pub mod bone;
 pub mod entity;
+pub mod engine;
+pub mod event_log;
 pub mod hooks;
 pub mod input;
 pub mod math;
@@ -11,6 +13,7 @@ pub mod panorama;
 pub mod pattern;
 pub mod pawn;
 pub mod state;
+pub mod skin_status;
 pub mod threading;
 pub mod tick;
 pub mod trace;

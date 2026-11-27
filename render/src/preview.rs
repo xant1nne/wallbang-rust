@@ -9,6 +9,7 @@ use wallbang_core::state::GameState;
 
 #[derive(Clone, Copy, Debug)]
 pub struct ModelRequest {
+    pub show_esp: bool,
     pub active: bool,
     pub rect: (f32, f32, f32, f32),
     pub clock: f32,
@@ -18,6 +19,7 @@ pub struct ModelRequest {
 
 impl ModelRequest {
     const EMPTY: Self = Self {
+        show_esp: true,
         active: false,
         rect: (0.0, 0.0, 0.0, 0.0),
         clock: 0.0,
@@ -97,6 +99,13 @@ pub fn clear_model_request() {
     *MODEL_REQUEST.lock() = ModelRequest::default();
 }
 
+pub fn inventory_model(rect: (f32, f32, f32, f32), enemy: bool) {
+    *MODEL_REQUEST.lock() = ModelRequest {
+        active: true, show_esp: false, rect, clock: 0.0, enemy,
+        material: agent_model::MaterialOverride::empty(),
+    };
+}
+
 fn set_model_request(request: ModelRequest, overlay: OverlayConfig) {
     *MODEL_REQUEST.lock() = request;
     *OVERLAY_CONFIG.lock() = overlay;
@@ -162,6 +171,8 @@ impl Default for EspPreviewState {
 }
 
 impl EspPreviewState {
+    pub fn set_enemy(&mut self, enemy: bool) { self.enemy = enemy; }
+
     pub fn sync_settings(&mut self, state: &GameState) {
         let settings = state.settings();
         let esp = &settings.esp;
@@ -241,7 +252,7 @@ impl EspPreviewState {
     pub fn native_config(&self, state: &GameState) -> crate::native_preview::PreviewConfig {
         use wallbang_config::settings::{esp_bits, has_flag};
         let esp = state.settings().esp.clone();
-        let cfg = &esp.enemies;
+        let cfg = if self.enemy { &esp.enemies } else { &esp.teammates };
         let mut preview = crate::native_preview::PreviewConfig {
             enemy: self.enemy,
             enabled: false,
@@ -391,10 +402,11 @@ impl EspPreviewState {
         dl.begin_top();
         dl.rect_rounded(x, y, w, h, 5.0, s.dark);
         dl.outline_rounded(x, y, w, h, 5.0, 1.0, s.border);
-        dl.text(x + 14.0, y + 12.0, "ESP PREVIEW", s.text, 1.0);
+        dl.text(x + 14.0, y + 12.0, "PLAYER PREVIEW", s.text, 1.0);
         let mode = if self.enemy { "Enemy" } else { "Team" };
         dl.text(x + w - 14.0 - dl.text_width(mode, 0.9), y + 14.0, mode, s.accent, 0.9);
         dl.line(x + 12.0, y + 31.0, x + w - 12.0, y + 31.0, 1.0, s.border);
+        dl.rect(x+14.0,y,42.0,2.0,s.accent);
 
         // Toggles drive the real per-target config used by the world overlay
         // (Enemy overlay slot) — not preview-only state.
@@ -429,7 +441,7 @@ impl EspPreviewState {
             let col = i % cols;
             let row = i / cols;
             let bx = x + 14.0 + col as f32 * (btn_w + gap);
-            let by = y + 38.0 + row as f32 * 25.0;
+            let by = y + h - 89.0 + row as f32 * 25.0;
             if toggle_button(ui, dl, label, bx, by, btn_w, 20.0, on[i], s) {
                 changed = true;
                 match i {
@@ -457,9 +469,10 @@ impl EspPreviewState {
         }
 
         let vx = x + 12.0;
-        let vy = y + 141.0;
+        let vy = y + 42.0;
         let vw = w - 24.0;
-        let vh = (h - 167.0).max(140.0);
+        let vh = (h - 150.0).max(140.0);
+        dl.studio_stage((vx,vy,vw,vh),s.accent);
         if vw < 90.0 || vh < 140.0 {
             dl.end_top();
             return;
@@ -480,6 +493,7 @@ impl EspPreviewState {
         );
         set_model_request(
             ModelRequest {
+                show_esp: true,
                 active: true,
                 rect: (vx, vy, vw, vh),
                 clock: self.clock,
@@ -500,9 +514,10 @@ impl EspPreviewState {
             );
         }
 
-        dl.outline_rounded(vx, vy, vw, vh, 4.0, 1.0, s.border);
+        dl.outline_rounded(vx, vy, vw, vh, 5.0, 1.0, s.border);
+        dl.line(x+14.0,y+h-101.0,x+w-14.0,y+h-101.0,1.0,s.border);
 
-        if self.debug_overlay {
+        if self.debug_overlay && state.settings().menu.developer {
             let text = format!(
                 "own ready={} bones={}",
                 agent_model::available() as usize,
@@ -545,7 +560,7 @@ pub fn draw_esp_overlay(dl: &mut DrawList, rect: (f32, f32, f32, f32)) {
         return;
     }
     let state = wallbang_core::state();
-    let cfg = state.settings().esp.enemies.clone();
+    let cfg = if request.enemy { state.settings().esp.enemies.clone() } else { state.settings().esp.teammates.clone() };
     if !cfg.enabled {
         return;
     }
@@ -593,18 +608,32 @@ pub fn draw_esp_overlay(dl: &mut DrawList, rect: (f32, f32, f32, f32)) {
     if !min_x.is_finite() || max_y <= min_y {
         return;
     }
-    // Celerity box: height from feet to head, width = height * 0.5, centred on
-    // the projected model, clamped into the viewport.
+    // Box around model bounds with top margin for name and bottom margin for weapon/distance.
     let height = max_y - min_y;
-    let width = height * 0.5;
+    let width = (height * 0.52).max(max_x - min_x + 12.0);
     let center_x = (min_x + max_x) * 0.5;
     let box_min = Vec2::new(
-        (center_x - width * 0.5).max(rect.0 + 2.0),
-        (min_y - 2.0).max(rect.1 + 2.0),
+        (center_x - width * 0.5).max(rect.0 + 18.0),
+        (min_y - 6.0).max(rect.1 + 20.0),
     );
     let box_max = Vec2::new(
-        (center_x + width * 0.5).min(rect.0 + rect.2 - 2.0),
-        (max_y + 2.0).min(rect.1 + rect.3 - 2.0),
+        (center_x + width * 0.5).min(rect.0 + rect.2 - 18.0),
+        (max_y + 4.0).min(rect.1 + rect.3 - 28.0),
+    );
+
+    // Soft ground shadow beneath feet
+    let shadow_w = (box_max.x - box_min.x) * 0.68;
+    let shadow_h = 8.0;
+    let shadow_x = center_x - shadow_w * 0.5;
+    let shadow_y = (box_max.y - 2.0).min(rect.1 + rect.3 - 12.0);
+    dl.rect_rounded(shadow_x, shadow_y, shadow_w, shadow_h, shadow_h * 0.5, [0, 0, 0, 56]);
+    dl.rect_rounded(
+        shadow_x + shadow_w * 0.15,
+        shadow_y + 1.5,
+        shadow_w * 0.7,
+        shadow_h - 3.0,
+        (shadow_h - 3.0) * 0.5,
+        [0, 0, 0, 84],
     );
 
     let snapshot = state.snapshot();
@@ -676,23 +705,31 @@ fn toggle_button(
     s: &Style,
 ) -> bool {
     let hover = !ui.overlay_blocking() && ui.inside(x, y, w, h);
-    let bg = if hover { s.hovered } else if on { s.active } else { s.elevated };
-    dl.rect(x, y, w, h, bg);
-    dl.outline(
+    let bg = if on {
+        [s.accent[0], s.accent[1], s.accent[2], if hover { 52 } else { 36 }]
+    } else if hover {
+        s.hovered
+    } else {
+        s.elevated
+    };
+    dl.rect_rounded(x, y, w, h, 3.0, bg);
+    dl.outline_rounded(
         x,
         y,
         w,
         h,
+        3.0,
         1.0,
-        if on { [s.accent[0], s.accent[1], s.accent[2], 130] } else { s.border },
+        if on { [s.accent[0], s.accent[1], s.accent[2], 170] } else { s.border },
     );
-    let tw = dl.text_width(label, 0.72);
+    let scale = 0.85;
+    let tw = dl.text_width(label, scale);
     dl.text(
-        x + (w - tw) * 0.5,
-        y + (h - dl.text_height(0.72)) * 0.5 - 1.0,
+        (x + (w - tw) * 0.5).floor(),
+        (y + (h - dl.text_height(scale)) * 0.5).floor(),
         label,
-        if on { s.text } else { s.text_dim },
-        0.72,
+        if on || hover { s.text } else { s.text_dim },
+        scale,
     );
     hover && ui.mouse_clicked()
 }

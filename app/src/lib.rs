@@ -3,29 +3,39 @@ mod diag;
 
 use parking_lot::Mutex;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use wallbang_config::constants::DEFAULT_PROFILE;
 use wallbang_config::storage::{default_dir, Storage};
-use wallbang_core::hooks::{parse_prefix, CallHook, PrologueHook, VTableHook};
+use wallbang_core::hooks::{CallHook, VTableHook};
 use wallbang_core::usercmd::UserCmd;
 use wallbang_lua::Runtime;
 
 const DLL_PROCESS_ATTACH: u32 = 1;
 const DLL_PROCESS_DETACH: u32 = 0;
 const WT_EXECUTEDEFAULT: u32 = 0;
+const SKIN_SHUTDOWN_WAIT_MS: u32 = 250;
+const SKIN_PROFILE_INTERVAL:std::time::Duration=std::time::Duration::from_secs(5);
 
 static INITIALIZED: OnceLock<()> = OnceLock::new();
 static LUA: Mutex<Option<Runtime>> = Mutex::new(None);
-static CREATE_MOVE: Mutex<Option<PrologueHook>> = Mutex::new(None);
-static CREATE_MOVE_TRAMPOLINE: AtomicUsize = AtomicUsize::new(0);
+static CREATE_MOVE: Mutex<Option<VTableHook>> = Mutex::new(None);
+static CREATE_MOVE_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+static CAPTURE_THREAD: AtomicU32 = AtomicU32::new(0);
+static CAPTURED_COMMAND: AtomicUsize = AtomicUsize::new(0);
+static MOVE_CALLS: AtomicUsize = AtomicUsize::new(0);
+static MOVE_CAPTURED: AtomicUsize = AtomicUsize::new(0);
+static MOVE_CHANGED: AtomicUsize = AtomicUsize::new(0);
 static AUTO_MAKE_USER_CMD: Mutex<Option<CallHook>> = Mutex::new(None);
 static AUTO_MAKE_USER_CMD_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static FRAME_STAGE: Mutex<Option<VTableHook>> = Mutex::new(None);
 static FRAME_STAGE_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static FRAMES: AtomicU32 = AtomicU32::new(0);
+static LUA_RENDER_PENDING: AtomicBool = AtomicBool::new(false);
+static LUA_SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+static LUA_SHUTDOWN_COMPLETE: AtomicBool = AtomicBool::new(false);
 
-type CreateMoveFn = unsafe extern "system" fn(*mut c_void, u32, bool) -> f64;
+type CreateMoveFn = unsafe extern "system" fn(*mut c_void, i32, bool);
 type FrameStageNotifyFn = unsafe extern "C" fn(usize, i32);
 /// IDA (client.dll build 14201): `sub_1809447B0(rcx, edx)` — edx is the
 /// command number, and the return is the `CUserCmd*` stored by the caller.
@@ -39,6 +49,7 @@ extern "system" {
         flags: u32,
     ) -> i32;
     fn Sleep(milliseconds: u32);
+    fn GetCurrentThreadId() -> u32;
 }
 
 unsafe extern "system" fn deferred_init(_: *mut c_void) -> u32 {
@@ -47,15 +58,27 @@ unsafe extern "system" fn deferred_init(_: *mut c_void) -> u32 {
 }
 
 /// Detour CCSGOInput::CreateMove. NOTE: третьим аргументом идёт `bool active`,
-/// а не CUserCmd* (как в Celerity). Пока здесь только диагностика: сам UserCmd
-/// захватывается отдельным хуком AutoMakeUserCmd (см. TODO ниже).
-unsafe extern "system" fn hk_create_move(this: *mut c_void, slot: u32, active: bool) -> f64 {
-    let trampoline = CREATE_MOVE_TRAMPOLINE.load(Ordering::Relaxed);
-    if trampoline == 0 {
-        return 0.0;
+/// а не CUserCmd*. AutoMakeUserCmd captures; features run after command construction.
+unsafe extern "system" fn hk_create_move(this: *mut c_void, slot: i32, active: bool) {
+    MOVE_CALLS.fetch_add(1, Ordering::Relaxed);
+    let original = CREATE_MOVE_ORIGINAL.load(Ordering::Relaxed);
+    if original == 0 {
+        return;
     }
-    let original: CreateMoveFn = std::mem::transmute(trampoline);
-    let result = original(this, slot, active);
+    let original: CreateMoveFn = std::mem::transmute(original);
+    CAPTURED_COMMAND.store(0, Ordering::Release);
+    CAPTURE_THREAD.store(GetCurrentThreadId(), Ordering::Release);
+    original(this, slot, active);
+    CAPTURE_THREAD.store(0, Ordering::Release);
+    let captured = CAPTURED_COMMAND.swap(0, Ordering::AcqRel);
+    if active && slot == 0 {
+        if let Some(cmd) = UserCmd::from_raw(captured) {
+            MOVE_CAPTURED.fetch_add(1, Ordering::Relaxed);
+            let before = (cmd.buttons(), cmd.side_move());
+            wallbang_feature::combat::cmd::on_create_move(cmd, &wallbang_core::state());
+            if before != (cmd.buttons(), cmd.side_move()) { MOVE_CHANGED.fetch_add(1, Ordering::Relaxed); }
+        }
+    }
     static CM_LOGS: AtomicUsize = AtomicUsize::new(0);
     if CM_LOGS.fetch_add(1, Ordering::Relaxed) < 3 {
         let settings = wallbang_core::state().settings().clone();
@@ -71,7 +94,6 @@ unsafe extern "system" fn hk_create_move(this: *mut c_void, slot: u32, active: b
             settings.misc.movement.edgejump,
         ));
     }
-    result
 }
 
 /// Captures the real `CUserCmd*` returned by AutoMakeUserCmd and runs the
@@ -86,16 +108,24 @@ unsafe extern "system" fn hk_auto_make_user_cmd(input: usize, command_number: us
     let original: AutoMakeUserCmdFn = std::mem::transmute(original);
     let address = original(input, command_number);
     if address != 0 {
-        if let Some(cmd) = UserCmd::from_raw(address) {
-            wallbang_feature::combat::cmd::on_create_move(cmd, &wallbang_core::state());
+        if CAPTURE_THREAD.load(Ordering::Acquire) == GetCurrentThreadId() {
+            CAPTURED_COMMAND.store(address, Ordering::Release);
         }
         static CAPTURE_LOGS: AtomicUsize = AtomicUsize::new(0);
         if CAPTURE_LOGS.fetch_add(1, Ordering::Relaxed) < 3 {
+            let state = wallbang_core::state();
+            let settings = state.settings();
             diag::log(&format!(
-                "AutoMakeUserCmd: cmd=0x{:X} command_number={} base=0x{:X}",
+                "AutoMakeUserCmd: cmd=0x{:X} command_number={} base=0x{:X} allow_writes={} mutations={} bhop={} autostrafe={} jumpbug={} edgejump={}",
                 address,
                 command_number,
-                cmd_base(address)
+                cmd_base(address),
+                settings.misc.allow_writes,
+                wallbang_core::mutation::is_allowed(),
+                settings.misc.bhop,
+                settings.misc.autostrafe,
+                settings.misc.movement.jumpbug,
+                settings.misc.movement.edgejump,
             ));
         }
     }
@@ -117,6 +147,11 @@ unsafe extern "C" fn hk_frame_stage_notify(this: usize, stage: i32) {
     if original != 0 {
         let original: FrameStageNotifyFn = std::mem::transmute(original);
         original(this, stage);
+    }
+    wallbang_feature::skins::on_frame_stage(stage, &wallbang_core::state());
+    if stage == 6 {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        wallbang_feature::clantag::sync_name(&wallbang_core::state(), now);
     }
 }
 
@@ -158,30 +193,45 @@ fn install_frame_stage_notify() {
     *FRAME_STAGE.lock() = Some(hook);
 }
 
-/// Ставит inline-хук по сигнатуре; если байты пролога не совпали — тихо пропускает.
-fn install_create_move() {    let Some(address) = wallbang_core::pattern::scan_module(
+/// Build 14201: CCSGOInput::CreateMove is vtable slot 5 (Celerity reference).
+/// The slot target is still cross-checked against the local signature before patching.
+fn install_create_move() {
+    let Some(address) = wallbang_core::pattern::scan_module(
         "client.dll",
         wallbang_config::signatures::SIG_CREATE_MOVE,
     ) else {
         diag::log("CreateMove: signature not found");
         return;
     };
-    diag::log(&format!("CreateMove: 0x{address:X}"));
-    let Some(prefix) = parse_prefix(wallbang_config::signatures::SIG_CREATE_MOVE_PROLOGUE) else {
-        diag::log("CreateMove: bad prologue prefix");
+    let Some(input) = wallbang_core::modules::csgo_input() else {
+        diag::log("CreateMove: CSGOInput unavailable");
         return;
     };
-    if prefix.len() != wallbang_config::signatures::CREATE_MOVE_STEAL_BYTES {
-        diag::log("CreateMove: wrong stolen byte count");
+    let Some(vtable) = (unsafe { wallbang_core::memory::read_ptr(input) }) else {
+        diag::log("CreateMove: CSGOInput vtable unavailable");
+        return;
+    };
+    const CREATE_MOVE_SLOT: usize = 5;
+    let slot_target = unsafe {
+        wallbang_core::memory::read_ptr(vtable + CREATE_MOVE_SLOT * std::mem::size_of::<usize>())
+    }.unwrap_or(0);
+    if slot_target != address {
+        diag::log(&format!(
+            "CreateMove: slot mismatch slot=0x{slot_target:X} sig=0x{address:X}"
+        ));
         return;
     }
-    let detour = hk_create_move as *const () as usize;
-    let Some(hook) = (unsafe { PrologueHook::install(address, detour, &prefix) }) else {
-        diag::log("CreateMove: hook install failed");
+    let Some(hook) = (unsafe {
+        VTableHook::install(input, CREATE_MOVE_SLOT, hk_create_move as *const () as usize)
+    }) else {
+        diag::log("CreateMove: vtable hook install failed");
         return;
     };
-    diag::log(&format!("CreateMove: hooked, trampoline=0x{:X}", hook.trampoline()));
-    CREATE_MOVE_TRAMPOLINE.store(hook.trampoline(), Ordering::SeqCst);
+    diag::log(&format!(
+        "CreateMove: hooked slot={CREATE_MOVE_SLOT} original=0x{:X}",
+        hook.original()
+    ));
+    CREATE_MOVE_ORIGINAL.store(hook.original(), Ordering::SeqCst);
     *CREATE_MOVE.lock() = Some(hook);
 }
 
@@ -213,17 +263,26 @@ fn install_auto_make_user_cmd() {
         ));
         return;
     }
-    let Some(hook) = (unsafe {
-        CallHook::install(call_site, hk_auto_make_user_cmd as *const () as usize)
-    }) else {
-        diag::log("AutoMakeUserCmd: call hook install failed");
-        return;
+    let hook = unsafe {
+        CallHook::install_result(call_site, hk_auto_make_user_cmd as *const () as usize)
     };
+    let hook = match hook {
+        Ok(hook) => hook,
+        Err(error) => {
+            diag::log(&format!(
+                "AutoMakeUserCmd: call hook install failed: {error} (call=0x{:X}, detour=0x{:X})",
+                call_site,
+                hk_auto_make_user_cmd as *const () as usize
+            ));
+            return;
+        }
+    };
+    let stub = hook.uses_stub();
     AUTO_MAKE_USER_CMD_ORIGINAL.store(original, Ordering::SeqCst);
     *AUTO_MAKE_USER_CMD.lock() = Some(hook);
     diag::log(&format!(
-        "AutoMakeUserCmd: hooked call=0x{:X} original=0x{:X}",
-        call_site, original
+        "AutoMakeUserCmd: hooked call=0x{:X} original=0x{:X} near_stub={}",
+        call_site, original, stub
     ));
 }
 
@@ -264,13 +323,32 @@ pub extern "system" fn wb_entry(_base: *mut c_void) -> u32 {
     // Manual-map: выход из remote-потока запускает FLS/CRT-деструкторы Rust
     // и падает в ntdll с 0xC0000409. Держим поток живым, лоадер считает таймаут успехом.
     diag::log("wb_entry: parking remote thread");
+    let mut last_skin_profile=std::time::Instant::now();
     loop {
+        if LUA_SHUTDOWN_REQUESTED.load(Ordering::Acquire) {
+            if !LUA_SHUTDOWN_COMPLETE.load(Ordering::Acquire) {
+                if let Some(runtime) = LUA.lock().take() {
+                    let _ = runtime.shutdown();
+                }
+                LUA_SHUTDOWN_COMPLETE.store(true, Ordering::Release);
+            }
+            unsafe { Sleep(16) };
+            continue;
+        }
+        if last_skin_profile.elapsed()>=SKIN_PROFILE_INTERVAL {
+            diag::log(&wallbang_feature::skins::take_profile());
+            last_skin_profile=std::time::Instant::now();
+        }
         if let Some(runtime) = LUA.lock().as_ref() {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0);
             let _ = runtime.tick(now);
+            // Keep Lua calls on its owner thread. Present only queues a signal.
+            if LUA_RENDER_PENDING.swap(false, Ordering::AcqRel) {
+                let _ = runtime.fire("render", &[]);
+            }
         }
         // Тик Lua выполняется в том же потоке, где создавался LuaJIT, — без
         // отдельного Rust-потока и его TLS-деструкторов.
@@ -314,8 +392,10 @@ pub fn initialize() -> Result<(), String> {
     }
     log_signatures();
     load_startup_profile();
+    diag::log("build marker: unicode-hud-gpu-profile-v1");
+    wallbang_core::state().settings_mut().misc.allow_writes = true;
 
-    wallbang_core::mutation::set_allowed(false);
+    wallbang_core::mutation::set_allowed(wallbang_core::state().settings().misc.allow_writes);
     let cvar_count = wallbang_feature::cvar::init();
     diag::log(&format!(
         "cvar backend: {} cvars, overrides={}",
@@ -338,9 +418,12 @@ pub fn initialize() -> Result<(), String> {
     wallbang_render::set_frame_callback(on_frame);
     install_create_move();
     install_auto_make_user_cmd();
+    diag::log(&format!("movement subtick: {}", if wallbang_core::usercmd::initialize_subtick() { "ready" } else { "unavailable" }));
+    diag::log(&format!("skin changer backend: {}", if wallbang_feature::skins::initialize() { "ready" } else { "unavailable" }));
     // Branch-safe scene-draw vtable slot hook. It no longer copies the
     // scenesystem.dll prologue, and it fails closed on an unexpected slot value.
     wallbang_feature::world::install();
+    diag::log(&format!("vote revealer hook: {}", wallbang_feature::votes::install()));
     diag::log(&format!(
         "world hooks: color={} skybox={} fog={}",
         if wallbang_feature::world::installed() { "ok" } else { "off" },
@@ -428,28 +511,50 @@ fn save_active_profile() {
 
 fn on_frame() {
     let frame = FRAMES.fetch_add(1, Ordering::Relaxed);
+    if frame % 120 == 0 {
+        static LAST_SKIN_REPORT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+        let report=wallbang_core::skin_status::snapshot();
+        if LAST_SKIN_REPORT.swap(report,Ordering::Relaxed)!=report {
+            diag::log(&format!("skin backend: {}",wallbang_core::skin_status::message()));
+        }
+    }
     if frame == 0 || frame % 600 == 0 {
         let state = wallbang_core::state();
+        diag::log(&format!("movement diag: calls={} captured={} changed={} allow_writes={}",
+            MOVE_CALLS.load(Ordering::Relaxed), MOVE_CAPTURED.load(Ordering::Relaxed),
+            MOVE_CHANGED.load(Ordering::Relaxed), state.settings().misc.allow_writes));
         diag::log(&format!(
-            "frame {frame}: menu_open={} valid={} players={}",
+            "frame {frame}: menu_open={} valid={} players={} | {}",
             wallbang_render::is_menu_open(),
             state.snapshot().valid,
-            state.snapshot().players.len()
+            state.snapshot().players.len(),
+            wallbang_feature::world::diag_summary(),
         ));
     }
     // Пользовательский тумблер "allow writes" в Misc -> MutationGuard.
-    let allowed = wallbang_core::state().settings().misc.allow_writes;
+    let state = wallbang_core::state();
+    state.settings_mut().misc.allow_writes = true;
+    let allowed = true;
     wallbang_core::mutation::set_allowed(allowed);
     if !allowed {
         wallbang_feature::cvar::restore_all();
     }
+    wallbang_feature::world::sync_settings(&state);
     // Client-side visuals that only need entity writes (radar reveal).
-    let state = wallbang_core::state();
     wallbang_feature::visuals::on_frame(&state);
-    wallbang_feature::c3::sync(&state);
-    if let Some(runtime) = LUA.lock().as_ref() {
-        let _ = runtime.fire("render", &[]);
+    wallbang_feature::event_feed::tick(&state);
+    {
+        let ct_cfg = state.settings().misc.clantag.clone();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let _ = wallbang_feature::clantag::tick(&ct_cfg, now_ms);
     }
+    if let Some(report) = wallbang_feature::c3::sync(&state) {
+        diag::log(&report);
+    }
+    LUA_RENDER_PENDING.store(true, Ordering::Release);
 }
 
 fn load_scripts(runtime: &Runtime) {
@@ -472,12 +577,37 @@ fn load_scripts(runtime: &Runtime) {
 #[no_mangle]
 pub extern "system" fn wb_shutdown() {
     save_active_profile();
-    if let Some(runtime) = LUA.lock().take() {
-        let _ = runtime.shutdown();
+    wallbang_feature::skins::request_shutdown();
+    wallbang_feature::clantag::request_shutdown();
+    wallbang_render::skin_inspect::set_request(None);
+    for _ in 0..SKIN_SHUTDOWN_WAIT_MS {
+        if wallbang_feature::skins::shutdown_complete() { break; }
+        unsafe { Sleep(1) };
     }
-    CREATE_MOVE_TRAMPOLINE.store(0, Ordering::SeqCst);
-    if let Some(mut hook) = CREATE_MOVE.lock().take() {
-        unsafe { hook.remove() };
+    if !wallbang_feature::skins::shutdown_complete() {
+        diag::log("skins: shutdown stage timeout; native restoration skipped on worker thread");
+    }
+    for _ in 0..500 {
+        if wallbang_feature::clantag::restored() { break; }
+        unsafe { Sleep(1); }
+    }
+    if !wallbang_feature::clantag::restored() { diag::log("name prefix: restore timeout, no game-thread stage available"); }
+    if let Some(hook) = FRAME_STAGE.lock().take() {
+        unsafe { hook.restore() };
+    }
+    FRAME_STAGE_ORIGINAL.store(0, Ordering::SeqCst);
+    LUA_RENDER_PENDING.store(false, Ordering::Release);
+    LUA_SHUTDOWN_REQUESTED.store(true, Ordering::Release);
+    for _ in 0..SKIN_SHUTDOWN_WAIT_MS {
+        if LUA_SHUTDOWN_COMPLETE.load(Ordering::Acquire) { break; }
+        unsafe { Sleep(1) };
+    }
+    if !LUA_SHUTDOWN_COMPLETE.load(Ordering::Acquire) {
+        diag::log("Lua: owner-thread shutdown timeout; no Lua call made from shutdown worker");
+    }
+    CREATE_MOVE_ORIGINAL.store(0, Ordering::SeqCst);
+    if let Some(hook) = CREATE_MOVE.lock().take() {
+        unsafe { hook.restore() };
     }
     AUTO_MAKE_USER_CMD_ORIGINAL.store(0, Ordering::SeqCst);
     if let Some(mut hook) = AUTO_MAKE_USER_CMD.lock().take() {
@@ -485,6 +615,7 @@ pub extern "system" fn wb_shutdown() {
     }
     wallbang_feature::cvar::shutdown();
     wallbang_feature::world::shutdown();
+    wallbang_feature::votes::shutdown();
     unsafe { wallbang_render::shutdown() };
 }
 

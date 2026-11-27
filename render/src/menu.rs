@@ -14,10 +14,44 @@ use wallbang_core::math::Vec2;
 use wallbang_core::state::GameState;
 use wallbang_resources::CHAM_MATERIALS;
 
+#[repr(C)]
+#[derive(Default)]
+struct SystemTime {
+    year: u16,
+    month: u16,
+    day_of_week: u16,
+    day: u16,
+    hour: u16,
+    minute: u16,
+    second: u16,
+    milliseconds: u16,
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetLocalTime(time: *mut SystemTime);
+}
+
+fn local_clock() -> String {
+    let mut time = SystemTime::default();
+    unsafe { GetLocalTime(&mut time) };
+    format!("{:02}:{:02}", time.hour, time.minute)
+}
+
 const SIDEBAR_W: f32 = 176.0;
 const GAP: f32 = 12.0;
 const SUBTAB_BAR_H: f32 = 44.0;
 const HEADER_H: f32 = 64.0;
+const MOVEMENT_BIND_KEYS: &[u16] = &[0, 0x20, 0x10, 0x11, 0x12, 0x05, 0x06, 0x56, 0x43, 0x46];
+const MOVEMENT_BIND_NAMES: &[&str] = &["None", "Space", "Shift", "Ctrl", "Alt", "Mouse4", "Mouse5", "V", "C", "F"];
+
+fn movement_binding(ui: &mut Ui, dl: &mut DrawList, bind: &mut wallbang_config::settings::MovementBind, s: &Style) {
+    let mut selected = MOVEMENT_BIND_KEYS.iter().position(|&key| key == bind.key).unwrap_or(0);
+    if ui.combo(dl, "key##movement_bind", &mut selected, MOVEMENT_BIND_NAMES, s) {
+        bind.key = MOVEMENT_BIND_KEYS[selected.min(MOVEMENT_BIND_KEYS.len() - 1)];
+    }
+    ui.combo(dl, "mode##movement_bind", &mut bind.mode, &["Always", "Hold", "Toggle"], s);
+}
 const ROW_H: f32 = 34.0;
 const SECTION_H: f32 = 28.0;
 const SECTION_GAP: f32 = 10.0;
@@ -33,6 +67,81 @@ const NEW_TABS: [&str; 7] = [
 ];
 
 static MENU_OPEN: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+mod panel_tests {
+    use super::*;
+
+    #[test]
+    fn inventory_browse_apply_and_back_are_separate_actions() {
+        let state = GameState::new();
+        let mut menu = Menu::new();
+        menu.tab=4; menu.subtab=0;
+        let mut list=DrawList::new();
+        let style=Style::new([120,180,255,255]);
+        let original=state.settings().skins.applied.len();
+        list.begin(1280.0,720.0);
+        menu.ui.test_pointer(300.0,150.0,true,0.0);
+        menu.draw_skins_real(&mut list,&state,100.0,100.0,640.0,480.0,&style);
+        assert!(menu.ext.skins_browsing.is_some());
+        assert_eq!(state.settings().skins.applied.len(),original);
+        list.begin(1280.0,720.0);
+        menu.ui.test_pointer(680.0,555.0,true,0.0);
+        menu.draw_skins_real(&mut list,&state,100.0,100.0,640.0,480.0,&style);
+        assert!(state.settings().skins.enabled);
+        assert!(state.settings().skins.applied.iter().any(|c|c.def_index==menu.skin_draft.def_index));
+        assert!(state.settings().misc.allow_writes);
+        list.begin(1280.0,720.0);
+        menu.ui.test_pointer(122.0,118.0,true,0.0);
+        menu.draw_skins_real(&mut list,&state,100.0,100.0,640.0,480.0,&style);
+        assert!(menu.ext.skins_browsing.is_none());
+    }
+
+    #[test]
+    fn inactive_ui_mirror_cannot_revert_direct_controls() {
+        let state = GameState::new();
+        let mut menu = Menu::new();
+        menu.tab = 5;
+        menu.load_ui_settings(&state);
+        {
+            let mut settings = state.settings_mut();
+            settings.misc.movement.jumpbug = true;
+            settings.misc.reveal_radar = true;
+            settings.visual.ambience.gamma = true;
+        }
+        for _ in 0..3 {
+            menu.commit_ui_settings(&state);
+            menu.load_ui_settings(&state);
+        }
+        let settings = state.settings();
+        assert!(settings.misc.movement.jumpbug);
+        assert!(settings.misc.reveal_radar);
+        assert!(settings.visual.ambience.gamma);
+    }
+
+    #[test]
+    fn visual_subtabs_and_misc_render_controls() {
+        let state = GameState::new();
+        let mut menu = Menu::new();
+        let style = Style::new([120, 180, 255, 255]);
+        let mut list = DrawList::new();
+        let mut counts = Vec::new();
+        for subtab in 0..3 {
+            menu.subtab = subtab;
+            list.begin(1280.0, 720.0);
+            menu.draw_visuals_real(&mut list, &state, 100.0, 100.0, 640.0, 460.0, &style);
+            counts.push(list.vertices().len());
+        }
+        assert_ne!(counts[0], counts[1]);
+        assert_ne!(counts[1], counts[2]);
+        assert_ne!(counts[0], counts[2]);
+        assert_eq!(SUBTABS[5], &["movement"]);
+        menu.subtab = 0;
+        list.begin(1280.0, 720.0);
+        menu.draw_misc_real(&mut list, &state, 100.0, 100.0, 640.0, 460.0, &style);
+        assert!(!list.vertices().is_empty());
+    }
+}
 
 pub fn is_menu_open() -> bool {
     MENU_OPEN.load(Ordering::Relaxed)
@@ -132,7 +241,7 @@ const SUBTABS: [&[&str]; 7] = [
     &["enemies", "allies", "local"],
     &["esp", "scene", "weather"],
     &["guns", "knives", "gloves", "agents"],
-    &["main", "removals", "camera", "hud"],
+    &["movement"],
     &["general"],
 ];
 
@@ -159,6 +268,16 @@ pub struct Menu {
     menu_rect: (f32, f32, f32, f32),
     hud_drag_owner: Option<usize>,
     hud_drag_offset: Vec2,
+    skin_dragging: bool,
+    skin_scroll: usize,
+    skin_sort: usize,
+    skin_all_paints: bool,
+    inventory_enemy: bool,
+    inspect_moving: bool,
+    inspect_model_fx: usize,
+    inspect_overlay_fx: usize,
+    inspect_stattrak_col: [u8; 4],
+    skin_draft: wallbang_config::settings::AppliedSkin,
 }
 
 impl Default for Menu {
@@ -167,28 +286,11 @@ impl Default for Menu {
     }
 }
 
-fn ui_layer_to_typed(layer: &ChamsLayer) -> wallbang_config::settings::ChamsMaterialLayer {
-    wallbang_config::settings::ChamsMaterialLayer {
-        enabled: layer.enabled,
-        material: layer.material,
-        color: layer.color,
-    }
-}
-
 fn typed_layer_to_ui(layer: &wallbang_config::settings::ChamsMaterialLayer) -> ChamsLayer {
     ChamsLayer {
         enabled: layer.enabled,
         material: layer.material,
         color: layer.color,
-    }
-}
-
-fn ui_preset_to_typed(cfg: &ChamsCfg) -> wallbang_config::settings::ChamsPreset {
-    wallbang_config::settings::ChamsPreset {
-        enabled: cfg.enabled,
-        primary: ui_layer_to_typed(&cfg.primary),
-        secondary: ui_layer_to_typed(&cfg.secondary),
-        overlay: ui_layer_to_typed(&cfg.overlay),
     }
 }
 
@@ -329,6 +431,16 @@ impl Menu {
             menu_rect: (0.0, 0.0, 0.0, 0.0),
             hud_drag_owner: None,
             hud_drag_offset: Vec2::default(),
+            skin_dragging: false,
+            skin_scroll: 0,
+            skin_sort: 0,
+            skin_all_paints: false,
+            inventory_enemy: false,
+            inspect_moving: false,
+            inspect_model_fx: 0,
+            inspect_overlay_fx: 0,
+            inspect_stattrak_col: [235, 168, 52, 255],
+            skin_draft: Default::default(),
         }
     }
 
@@ -465,14 +577,9 @@ impl Menu {
         let ext = &self.ext;
         let mut settings = state.settings_mut();
         settings.ui = ext.clone();
-        let chams = &mut settings.visual.chams;
-        chams.enemy = ui_preset_to_typed(&ext.chams[0]);
-        chams.team = ui_preset_to_typed(&ext.chams[1]);
-        chams.local = ui_preset_to_typed(&ext.chams[2]);
-        chams.weapon = ui_preset_to_typed(&ext.chams[3]);
-        chams.arms = ui_preset_to_typed(&ext.chams[4]);
-        chams.ragdoll = ext.ragdoll_chams.iter().map(ui_preset_to_typed).collect();
-
+        // Only controls owned by the active page may update typed state.
+        // Other pages edit typed Settings directly and must never be mirrored back.
+        if self.tab == PREVIEW_TAB {
         let esp = &mut settings.esp;
         let ov = &ext.overlays[0];
         esp.enabled = ov.enabled;
@@ -502,103 +609,26 @@ impl Menu {
         // Master toggle: the world overlay draws when at least one target
         // class is enabled and the global ESP switch is on.
         esp.enabled = esp.enemies.enabled || esp.teammates.enabled;
-        settings.misc.hit_log = ext.hit_logs;
-        settings.misc.miss_log = ext.miss_logs;
-        settings.misc.reveal_radar = ext.reveal_radar;
 
-        let tracers = &mut settings.visual.tracers;
-        tracers.hit_marker = ext.hit_marker;
-        tracers.hit_marker_type = ext.hit_marker_type;
-        tracers.hit_effect = ext.hit_effect;
-        tracers.bullet_tracers = ext.bullet_tracers;
-
-        let audio = &mut settings.misc.audio;
-        audio.hit_sound = ext.hit_sound;
-        audio.hit_sound_type = ext.hit_sound_type;
-        audio.hit_sound_volume = ext.hit_sound_vol;
-        audio.death_sound = ext.death_sound;
-        audio.death_sound_type = ext.death_sound_type;
-        audio.death_sound_volume = ext.death_sound_vol;
-
-        let movement = &mut settings.misc.movement;
-        movement.jumpbug = ext.jumpbug;
-        movement.mini_jump = ext.mini_jump;
-        movement.fast_ladder = ext.fastladder;
-        movement.edgejump = ext.edgejump;
-        movement.edgestop = ext.edgestop;
-        movement.edgebug = ext.edgebug;
-
-        let viewmodel = &mut settings.visual.viewmodel;
-        viewmodel.thirdperson = ext.thirdperson;
-        viewmodel.tp_dist = ext.tp_dist;
-        viewmodel.tp_hull = ext.tp_hull;
-        viewmodel.offset = ext.vm_xyzf;
-        viewmodel.fov_override = ext.custom_fov;
-        viewmodel.fov_value = ext.fov_val;
-        viewmodel.scoped_fov_override = ext.scoped_fov_ov;
-        viewmodel.scoped_fov = ext.scoped_fov;
-        viewmodel.aspect_enabled = ext.aspect_on;
-        viewmodel.aspect_value = ext.aspect_val;
-        viewmodel.adjust = ext.vm_adjust;
-        viewmodel.fov = ext.vm_xyzf[3];
-
-        let ambience = &mut settings.visual.ambience;
-        ambience.skybox = ext.skybox_mat;
-        ambience.skybox_idx = ext.skybox_idx;
-        ambience.skybox_color = ext.skybox_col;
-        ambience.sky_color = ext.sky_color;
-        ambience.cloud_color = ext.cloud_color;
-        ambience.sun_color = ext.sun_color;
-        ambience.world_material = ext.world_mat;
-        ambience.world_material_type = ext.world_mat_type;
-        ambience.world_material_color = ext.world_mat_col;
-        ambience.world_color = ext.world_color;
-        ambience.world_color_tint = ext.world_col;
-        ambience.remove_3d_skybox = ext.remove_3d_skybox;
-        ambience.remove_skybox_fog = ext.remove_skybox_fog;
-        ambience.lighting = ext.lighting;
-        ambience.lighting_intensity = ext.lighting_int;
-        ambience.lighting_color = ext.lighting_col;
-        ambience.fog = ext.fog_on;
-        ambience.fog_density = ext.fog_density;
-        ambience.fog_color = ext.fog_col;
-        ambience.weather_on = ext.weather_on;
-        ambience.weather = ext.weather_type;
-        ambience.weather_color = ext.weather_col;
-
-        settings.visual.fire_area = ext.fire_area;
-        settings.visual.fire_area_color = ext.fire_area_col;
-        settings.visual.grenade.trajectory = ext.proj_traj;
-        settings.visual.items.groups = ext.item_esp.to_vec();
-        settings.visual.items.enabled = ext.item_esp.iter().any(|v| *v);
-        settings.visual.items.max_distance = ext.item_dist;
-        settings.visual.items.display = ext.item_display;
-
-        let autobuy = &mut settings.misc.autobuy;
-        autobuy.enabled = ext.autobuy;
-        autobuy.grenades = ext.ab_nades;
-        autobuy.armor = ext.ab_armor;
-        autobuy.defuser = ext.ab_defuser;
-        autobuy.taser = ext.ab_taser;
-
-        let applied: Vec<_> = ext
-            .applied_skins
-            .iter()
-            .map(|(&def_index, &(paint_index, wear, seed, stattrak))| {
-                wallbang_config::settings::AppliedSkin {
-                    def_index,
-                    paint_index,
-                    wear,
-                    seed,
-                    stattrak,
-                }
-            })
-            .collect();
-        settings.skins.applied = applied;
+        }
+        if self.tab == 3 {
+            settings.visual.fire_area = ext.fire_area;
+            settings.visual.fire_area_color = ext.fire_area_col;
+            settings.visual.items.groups = ext.item_esp.to_vec();
+            let settings_ref = &mut *settings;
+        let ambience = &mut settings_ref.visual.ambience;
+            ambience.world_color = ext.world_color;
+            ambience.world_color_tint = ext.world_col;
+            ambience.remove_3d_skybox = ext.remove_3d_skybox;
+            ambience.remove_skybox_fog = ext.remove_skybox_fog;
+            ambience.weather_on = ext.weather_on;
+            ambience.weather = ext.weather_type;
+            ambience.weather_color = ext.weather_col;
+        }
     }
 
     pub fn frame(&mut self, dl: &mut DrawList, state: &GameState, screen_w: f32, screen_h: f32) {
-        self.ui.begin_frame();
+        self.ui.begin_frame_with_cursor(crate::hooks::menu_pointer(screen_w, screen_h));
         let toggle_key = state.settings().menu.toggle_key as u16;
         let key_now = wallbang_core::input::key_down(toggle_key);
         if key_now && !self.toggle_held {
@@ -612,24 +642,22 @@ impl Menu {
             crate::hooks::enforce_menu_cursor();
         }
         self.cursor.sync(self.open);
+        if !self.open || self.tab != 4 {
+            crate::skin_inspect::park();
+            self.skin_dragging = false;
+        }
         self.load_ui_settings(state);
-        self.preview.sync_settings(state);
-        // HUD widgets are intentionally disabled: this build only has the menu
-        // shell, so showing hotkey/indicator/spectator placeholders would be
-        // fake data. Re-enable `draw_hud_widgets` once the features exist.
+        self.draw_hud_widgets(dl, state, screen_w, screen_h);
         if !self.open || self.tab != PREVIEW_TAB {
-            let cfg = self.preview.native_config(state);
-            crate::native_preview::set_request(false, (0.0, 0.0, 0.0, 0.0), (screen_w, screen_h), cfg);
+            crate::native_preview::clear_request();
             crate::preview::clear_model_request();
         }
         if !self.open {
-            self.commit_ui_settings(state);
-            self.preview.commit_settings(state);
+            dl.flush_top();
             return;
         }
+        self.preview.sync_settings(state);
         self.draw_menu_internal(dl, state, screen_w, screen_h);
-        self.commit_ui_settings(state);
-        self.preview.commit_settings(state);
         dl.flush_top();
     }
 
@@ -645,7 +673,8 @@ impl Menu {
     ) {
         self.open = true;
         self.tab = tab.min(NEW_TABS.len() - 1);
-        self.subtab = subtab.min(2);
+        self.subtab = subtab.min(SUBTABS[self.tab].len().saturating_sub(1));
+        self.load_ui_settings(state);
         self.ui.set_synthetic_mouse(0.0, 0.0);
         self.draw_menu_internal(dl, state, screen_w, screen_h);
         dl.flush_top();
@@ -689,6 +718,11 @@ impl Menu {
         // The whole top strip is the drag handle while the shell is empty.
         self.ui
             .handle_window_drag(&mut mx, &mut my, mw, HEADER_H, screen_w, screen_h, mw, mh);
+        if self.tab == PREVIEW_TAB && screen_w >= mw + 356.0 {
+            let fits_right = mx + mw + 332.0 <= screen_w - 8.0;
+            let fits_left = mx >= 340.0;
+            if !fits_right && !fits_left { mx = ((screen_w - mw - 332.0) * 0.5).max(8.0); }
+        }
         {
             let mut s = state.settings_mut();
             s.menu.x = mx;
@@ -725,9 +759,7 @@ impl Menu {
 
         self.draw_sidebar_v2(dl, mx, my, mh, &style);
         self.draw_content_v2(dl, state, mx, my, mw, mh, &style);
-        // Panels write into `self.ext`; copy them into typed Settings before
-        // the floating preview samples chams/ESP state on the same frame.
-        self.commit_ui_settings(state);
+        self.preview.set_enemy(self.subtab == 0);
         self.preview.sync_settings(state);
 
         // Панель ESP открывается только на вкладке Players.
@@ -744,7 +776,7 @@ impl Menu {
             let py = my.min((screen_h - ph - 8.0).max(8.0)).max(8.0);
             self.preview.draw_panel(
                 state,
-                &mut self.ext.overlays[0],
+                &mut self.ext.overlays[self.subtab.min(1)],
                 &mut self.ui,
                 dl,
                 px,
@@ -754,16 +786,17 @@ impl Menu {
                 &style,
             );
         }
+        self.commit_ui_settings(state);
     }
 
     /// Новый сайдбар: только навигация по разделам, без выдуманных настроек.
     fn draw_sidebar_v2(&mut self, dl: &mut DrawList, mx: f32, my: f32, mh: f32, s: &Style) {
-        let sx = mx + GAP * 0.5;
-        let sy = my + HEADER_H;
-        let sw = NEW_SIDEBAR_W;
-        let sh = (mh - HEADER_H - GAP * 0.5).max(40.0);
-        dl.rect_rounded(sx, sy, sw, sh, 4.0, [11, 11, 13, 255]);
-        dl.outline_rounded(sx, sy, sw, sh, 4.0, 1.0, s.border);
+        let sx = mx + 1.0;
+        let sy = my + HEADER_H - 3.0;
+        let sw = NEW_SIDEBAR_W + GAP * 0.5;
+        let sh = (mh - HEADER_H + 2.0).max(40.0);
+        dl.rect(sx, sy, sw, sh, [11, 11, 13, 255]);
+        dl.line(sx + sw, sy, sx + sw, sy + sh, 1.0, s.border);
 
         let labels: [(usize, &str, f32); 7] = [
             (0, NEW_TABS[0], 24.0),
@@ -789,7 +822,7 @@ impl Menu {
             }
             let x = sx + 6.0;
             let selected = self.tab == idx;
-            let hover = !self.ui.overlay_blocking() && self.ui.inside(x, y, row_w, row_h);
+            let hover = self.ui.inside(x, y, row_w, row_h);
             let bg = if selected {
                 s.active
             } else if hover {
@@ -805,6 +838,9 @@ impl Menu {
             dl.text(x + 12.0, y + (row_h - dl.text_height(1.0)) * 0.5, label, color, 1.0);
             if hover && self.ui.mouse_clicked() {
                 self.tab = idx;
+                self.subtab = 0;
+                self.ui.close_overlays();
+                self.skin_dragging = false;
             }
         }
     }
@@ -844,7 +880,7 @@ impl Menu {
                     self.draw_esp_real(dl, x, content_y, w, content_h, s);
                 }
                 3 => self.draw_visuals_real(dl, state, x, content_y, w, content_h, s),
-                4 => self.draw_unavailable(dl, x, content_y, w, content_h, s),
+                4 => self.draw_skins_real(dl, state, x, content_y, w, content_h, s),
                 5 => self.draw_misc_real(dl, state, x, content_y, w, content_h, s),
                 _ => {}
             }
@@ -874,7 +910,9 @@ impl Menu {
     fn draw_esp_real(&mut self, dl: &mut DrawList, x: f32, y: f32, w: f32, h: f32, s: &Style) {
         let subtab = self.subtab.min(1);
         let ov = &mut self.ext.overlays[subtab];
-        self.ui.child(dl, x, y, w, h, true, s, |ui, dl| {
+        let col_w = ((w - GAP) * 0.5).max(160.0);
+        let right_x = x + col_w + GAP;
+        self.ui.child(dl, x, y, col_w, h, true, s, |ui, dl| {
             ui.text(dl, if subtab == 0 { "Enemies" } else { "Allies" }, s.text_dim, 1.0);
             ui.separator(dl, s);
             ui.checkbox(dl, "enable", &mut ov.enabled, s);
@@ -895,20 +933,24 @@ impl Menu {
                 ui.color_picker(dl, "full color##hp_real", &mut ov.health.full_color, s);
                 ui.color_picker(dl, "low color##hp_real", &mut ov.health.low_color, s);
             });
-            ui.checkbox(dl, "ammo bar", &mut ov.ammo.enabled, s);
-            ui.popup(dl, "##ammo_popup_real", POPUP_W, 124.0, s, |ui, dl| {
-                ui.checkbox(dl, "gradient##ammo_real", &mut ov.ammo.gradient, s);
-                ui.checkbox(dl, "show value##ammo_real", &mut ov.ammo.show_value, s);
-                ui.color_picker(dl, "full color##ammo_real", &mut ov.ammo.full_color, s);
-                ui.color_picker(dl, "low color##ammo_real", &mut ov.ammo.low_color, s);
-            });
             ui.checkbox(dl, "name", &mut ov.name_on, s);
             ui.popup(dl, "##name_popup_real", POPUP_W, 56.0, s, |ui, dl| {
                 ui.color_picker(dl, "color##name_real", &mut ov.name_color, s);
             });
+        });
+        self.ui.child(dl, right_x, y, col_w, h, true, s, |ui, dl| {
+            ui.text(dl, "Weapon & Extras", s.text_dim, 1.0);
+            ui.separator(dl, s);
             ui.checkbox(dl, "weapon", &mut ov.weapon_on, s);
             ui.popup(dl, "##wep_popup_real", POPUP_W, 56.0, s, |ui, dl| {
                 ui.color_picker(dl, "text color##wep_real", &mut ov.weapon_text, s);
+            });
+            ui.checkbox(dl, "ammo bar", &mut ov.ammo.enabled, s);
+            ui.popup(dl, "##ammo_popup_right_real", POPUP_W, 124.0, s, |ui, dl| {
+                ui.checkbox(dl, "gradient##ammo_right_real", &mut ov.ammo.gradient, s);
+                ui.checkbox(dl, "show value##ammo_right_real", &mut ov.ammo.show_value, s);
+                ui.color_picker(dl, "full color##ammo_right_real", &mut ov.ammo.full_color, s);
+                ui.color_picker(dl, "low color##ammo_right_real", &mut ov.ammo.low_color, s);
             });
             ui.checkbox(dl, "flags", &mut ov.flags_on, s);
             ui.popup(dl, "##flags_popup_real", POPUP_W, 110.0, s, |ui, dl| {
@@ -930,15 +972,218 @@ impl Menu {
         h: f32,
         s: &Style,
     ) {
+        let subtab = self.subtab.min(2);
         let mut settings = state.settings_mut();
-        let ambience = &mut settings.visual.ambience;
+        let settings_ref = &mut *settings;
+        let visual = &mut settings_ref.visual;
+        let ambience = &mut visual.ambience;
+        let items = &mut visual.items;
+        let grenade = &mut visual.grenade;
+        let pp = &mut settings_ref.postprocess;
+        if subtab == 0 {
+            let col_w = ((w - GAP) * 0.5).max(160.0);
+            let right_x = x + col_w + GAP;
+            self.ui.child(dl, x, y, col_w, h.min(460.0), true, s, |ui, dl| {
+                ui.text(dl, "World ESP", s.text_dim, 1.0);
+                ui.separator(dl, s);
+                ui.checkbox(dl, "dropped weapons", &mut items.enabled, s);
+                if items.enabled {
+                    ui.multicombo(dl, "groups##world_items", &mut self.ext.item_esp, &ITEM_GROUPS, s);
+                    ui.combo(dl, "display##world_items", &mut items.display, &DISPLAY_TYPES, s);
+                    ui.slider_f32(dl, "distance##world_items", &mut items.max_distance, 1.0, 100.0, 0, " m", s);
+                    ui.color_picker(dl, "color##world_items", &mut items.color, s);
+                }
+                ui.checkbox(dl, "grenade trajectory", &mut grenade.trajectory, s);
+                ui.checkbox(dl, "grenade warnings", &mut grenade.warnings, s);
+                ui.checkbox(dl, "C4 timer", &mut self.ext.bomb_timer, s);
+                ui.checkbox(dl, "fire area", &mut self.ext.fire_area, s);
+                ui.popup(dl, "##fire_area_real", POPUP_W, 56.0, s, |ui, dl| {
+                    ui.color_picker(dl, "color##fire_real", &mut self.ext.fire_area_col, s);
+                });
+            });
+            self.ui.child(dl, right_x, y, col_w, h.min(460.0), true, s, |ui, dl| {
+                ui.text(dl, "Removals & Local", s.text_dim, 1.0);
+                ui.separator(dl, s);
+                ui.checkbox(dl, "reduce smoke effects", &mut ambience.smoke_removal, s);
+                ui.checkbox(dl, "remove 3d skybox", &mut self.ext.remove_3d_skybox, s);
+                ui.checkbox(dl, "remove skybox fog", &mut self.ext.remove_skybox_fog, s);
+                ui.checkbox(dl, "custom crosshair", &mut self.ext.xhair_ov, s);
+                ui.checkbox(dl, "scope overlay", &mut self.ext.scope_ov, s);
+                ui.checkbox(dl, "velocity counter", &mut self.ext.vel_counter, s);
+                ui.separator(dl, s);
+                ui.text(dl, "Flash and recoil removals stay hidden until a backend is wired.", s.text_dim, 0.85);
+            });
+        } else if subtab == 1 {
+            let col_gap = 10.0;
+            let col_w = ((w - col_gap) * 0.5).max(160.0);
+            let card_h = h.min(480.0);
+            const PP_PRESETS: [&str; 9] = [
+                "Custom",
+                "Competitive",
+                "Vibrant",
+                "Cinematic",
+                "High Contrast",
+                "Cold",
+                "Warm",
+                "Night Vision",
+                "Desaturated",
+            ];
+            // Left card: D3D11 Color Grading & World Tint
+            self.ui.child(dl, x, y, col_w, card_h, true, s, |ui, dl| {
+                ui.text(dl, "Color Grading (D3D11)", s.text_dim, 1.0);
+                ui.separator(dl, s);
+                let blur = &mut settings_ref.misc.motion_blur;
+                ui.checkbox(dl, "motion blur##active_scene", &mut blur.enabled, s);
+                if blur.enabled {
+                    ui.slider_f32(dl, "blur strength##active_scene", &mut blur.strength, 0.0, 1.0, 2, "", s);
+                    ui.checkbox(dl, "only while moving##active_scene", &mut blur.on_velocity, s);
+                }
+                ui.checkbox(dl, "enable post-process##pp", &mut pp.enabled, s);
+                if pp.enabled {
+                    let mut preset_idx = pp.preset.min(PP_PRESETS.len() - 1);
+                    if ui.combo(dl, "look preset##pp", &mut preset_idx, &PP_PRESETS, s) {
+                        pp.apply_preset(preset_idx);
+                    }
+                    ui.slider_f32(dl, "nightmode##pp", &mut pp.nightmode, 0.0, 1.0, 2, "", s);
+                    ui.color_picker(dl, "world tint##pp", &mut pp.world_tint, s);
+                    ui.slider_f32(dl, "tint strength##pp", &mut pp.world_tint_strength, 0.0, 1.0, 2, "", s);
+                    ui.slider_f32(dl, "exposure##pp", &mut pp.exposure, -1.5, 1.5, 2, "", s);
+                    ui.slider_f32(dl, "contrast##pp", &mut pp.contrast, 0.5, 2.0, 2, "", s);
+                    ui.slider_f32(dl, "saturation##pp", &mut pp.saturation, 0.0, 2.0, 2, "", s);
+                    ui.slider_f32(dl, "vibrance##pp", &mut pp.vibrance, -1.0, 1.0, 2, "", s);
+                    ui.slider_f32(dl, "temperature##pp", &mut pp.temperature, -1.0, 1.0, 2, "", s);
+                    ui.slider_f32(dl, "tint##pp", &mut pp.tint, -1.0, 1.0, 2, "", s);
+                    ui.slider_f32(dl, "gamma##pp", &mut pp.gamma, 0.5, 2.0, 2, "", s);
+                    ui.slider_f32(dl, "vignette##pp", &mut pp.vignette, 0.0, 1.0, 2, "", s);
+                    ui.slider_f32(dl, "sharpen##pp", &mut pp.sharpen, 0.0, 1.5, 2, "", s);
+                }
+            });
+            // Right card: Scene, Lighting, Fog, Engine Post
+            self.ui.child(dl, x + col_w + col_gap, y, col_w, card_h, true, s, |ui, dl| {
+                ui.text(dl, "Scene & World", s.text_dim, 1.0);
+                ui.separator(dl, s);
+                ui.checkbox(dl, "world color", &mut self.ext.world_color, s);
+                ui.popup(dl, "##world_color_real", POPUP_W, 56.0, s, |ui, dl| {
+                    ui.color_picker(dl, "color##world_real", &mut self.ext.world_col, s);
+                });
+                ui.checkbox(dl, "remove 3d skybox", &mut self.ext.remove_3d_skybox, s);
+                ui.checkbox(dl, "remove skybox fog", &mut self.ext.remove_skybox_fog, s);
+                ui.separator(dl, s);
+                ui.checkbox(dl, "skybox tint", &mut ambience.skybox_color, s);
+                if ambience.skybox_color {
+                    ui.color_picker(dl, "sky color##scene", &mut ambience.sky_color, s);
+                }
+                ui.text(dl, "Lighting & Fog", s.text_dim, 1.0);
+                ui.checkbox(dl, "lighting", &mut ambience.lighting, s);
+                if ambience.lighting {
+                    ui.slider_f32(dl, "intensity##light", &mut ambience.lighting_intensity, 0.0, 4.0, 2, "", s);
+                    ui.color_picker(dl, "light color##scene", &mut ambience.lighting_color, s);
+                }
+                ui.checkbox(dl, "fog override", &mut ambience.fog, s);
+                if ambience.fog {
+                    ui.slider_f32(dl, "density##fog", &mut ambience.fog_density, 0.0, 1.0, 2, "", s);
+                    ui.color_picker(dl, "fog color##scene", &mut ambience.fog_color, s);
+                    ui.slider_f32(dl, "end##fog", &mut ambience.fog_end, 0.0, 20_000.0, 0, "", s);
+                }
+                ui.separator(dl, s);
+                ui.text(dl, "Engine Post", s.text_dim, 1.0);
+                ui.checkbox(dl, "bloom", &mut ambience.bloom, s);
+                if ambience.bloom {
+                    ui.slider_f32(dl, "strength##bloom", &mut ambience.bloom_strength, 0.0, 4.0, 2, "", s);
+                }
+                ui.checkbox(dl, "gamma", &mut ambience.gamma, s);
+                if ambience.gamma {
+                    ui.slider_f32(dl, "value##gamma", &mut ambience.gamma_value, 0.5, 4.0, 2, "", s);
+                }
+                ui.checkbox(dl, "depth of field", &mut ambience.dof, s);
+                if ambience.dof {
+                    ui.slider_f32(dl, "near blur##dof", &mut ambience.dof_near_blurry, 0.0, 2_000.0, 0, "", s);
+                    ui.slider_f32(dl, "far blur##dof", &mut ambience.dof_far_blurry, 0.0, 2_000.0, 0, "", s);
+                }
+            });
+        } else {
         self.ui.child(dl, x, y, w, h.min(460.0), true, s, |ui, dl| {
+            if subtab == 1 {
+            ui.text(dl, "Atmosphere presets", s.text_dim, 1.0);
+            if ui.button(dl, "Moonlit", 90.0, 24.0, s) {
+                self.ext.world_color = true;
+                self.ext.world_col = [130, 158, 204, 255];
+                ambience.lighting = true; ambience.lighting_intensity = 0.75;
+                ambience.fog = true; ambience.fog_density = 0.08; ambience.fog_end = 6500.0;
+                self.ext.weather_on = true; self.ext.weather_type = 0;
+                self.ext.weather_col = [195, 221, 255, 210];
+                ambience.weather_density = 2200.0; ambience.weather_wind = 0.35;
+                ambience.ambient_particles = false;
+            }
+            ui.same_line();
+            if ui.button(dl, "Ember", 90.0, 24.0, s) {
+                self.ext.world_color = true;
+                self.ext.world_col = [230, 173, 132, 255];
+                ambience.lighting = true; ambience.lighting_intensity = 0.85;
+                ambience.fog = false;
+                self.ext.weather_on = false;
+                ambience.ambient_particles = true; ambience.particle_style = 1;
+                ambience.particle_color = [255, 174, 77, 210]; ambience.particle_density = 130.0;
+            }
+            ui.same_line();
+            if ui.button(dl, "Aurora", 90.0, 24.0, s) {
+                self.ext.world_color = true;
+                self.ext.world_col = [137, 207, 194, 255];
+                ambience.lighting = true; ambience.lighting_intensity = 0.8;
+                ambience.fog = false;
+                self.ext.weather_on = true; self.ext.weather_type = 2;
+                self.ext.weather_col = [159, 238, 222, 220]; ambience.weather_density = 1800.0;
+                ambience.ambient_particles = true; ambience.particle_style = 0;
+                ambience.particle_color = [184, 255, 205, 180]; ambience.particle_density = 60.0;
+            }
+            ui.separator(dl, s);
+            }
+            if subtab == 0 {
             ui.text(dl, "World overlay", s.text_dim, 1.0);
             ui.separator(dl, s);
             ui.checkbox(dl, "fire area", &mut self.ext.fire_area, s);
             ui.popup(dl, "##fire_area_real", POPUP_W, 56.0, s, |ui, dl| {
                 ui.color_picker(dl, "color##fire_real", &mut self.ext.fire_area_col, s);
             });
+            }
+            if subtab == 1 {
+            const PP_PRESETS: [&str; 9] = [
+                "Custom",
+                "Competitive",
+                "Vibrant",
+                "Cinematic",
+                "High Contrast",
+                "Cold",
+                "Warm",
+                "Night Vision",
+                "Desaturated",
+            ];
+            ui.text(dl, "Color Grading (D3D11)", s.text_dim, 1.0);
+            ui.separator(dl, s);
+                ui.checkbox(dl, "enable post-process##pp", &mut pp.enabled, s);
+                let blur = &mut settings_ref.misc.motion_blur;
+                ui.checkbox(dl, "motion blur##scene", &mut blur.enabled, s);
+                if blur.enabled {
+                    ui.slider_f32(dl, "blur strength##scene", &mut blur.strength, 0.0, 1.0, 2, "", s);
+                    ui.checkbox(dl, "only while moving##scene", &mut blur.on_velocity, s);
+                }
+            if pp.enabled {
+                let mut preset_idx = pp.preset.min(PP_PRESETS.len() - 1);
+                if ui.combo(dl, "look preset##pp", &mut preset_idx, &PP_PRESETS, s) {
+                    pp.apply_preset(preset_idx);
+                }
+                ui.slider_f32(dl, "nightmode##pp", &mut pp.nightmode, 0.0, 1.0, 2, "", s);
+                ui.slider_f32(dl, "exposure##pp", &mut pp.exposure, -1.5, 1.5, 2, "", s);
+                ui.slider_f32(dl, "contrast##pp", &mut pp.contrast, 0.5, 2.0, 2, "", s);
+                ui.slider_f32(dl, "saturation##pp", &mut pp.saturation, 0.0, 2.0, 2, "", s);
+                ui.slider_f32(dl, "vibrance##pp", &mut pp.vibrance, -1.0, 1.0, 2, "", s);
+                ui.slider_f32(dl, "temperature##pp", &mut pp.temperature, -1.0, 1.0, 2, "", s);
+                ui.slider_f32(dl, "tint##pp", &mut pp.tint, -1.0, 1.0, 2, "", s);
+                ui.slider_f32(dl, "gamma##pp", &mut pp.gamma, 0.5, 2.0, 2, "", s);
+                ui.slider_f32(dl, "vignette##pp", &mut pp.vignette, 0.0, 1.0, 2, "", s);
+                ui.slider_f32(dl, "sharpen##pp", &mut pp.sharpen, 0.0, 1.5, 2, "", s);
+            }
+            ui.separator(dl, s);
             ui.checkbox(dl, "world color", &mut self.ext.world_color, s);
             ui.popup(dl, "##world_color_real", POPUP_W, 56.0, s, |ui, dl| {
                 ui.color_picker(dl, "color##world_real", &mut self.ext.world_col, s);
@@ -976,15 +1221,380 @@ impl Menu {
                 ui.slider_f32(dl, "far blur##dof", &mut ambience.dof_far_blurry, 0.0, 2_000.0, 0, "", s);
             }
             ui.separator(dl, s);
+            }
+            if subtab == 2 {
             ui.text(dl, "Weather", s.text_dim, 1.0);
-            ui.checkbox(dl, "rain particles", &mut ambience.weather_on, s);
-            if ambience.weather_on {
+            ui.checkbox(dl, "weather", &mut self.ext.weather_on, s);
+            if self.ext.weather_on {
+                ui.combo(dl, "type##weather_real", &mut self.ext.weather_type, &WEATHER_TYPES, s);
+                ui.color_picker(dl, "color##weather_real", &mut self.ext.weather_col, s);
                 ui.slider_f32(dl, "density##rain", &mut ambience.weather_density, 0.0, 10_000.0, 0, "", s);
+                ui.slider_f32(dl, "speed##weather", &mut ambience.weather_speed, 0.1, 4.0, 2, "", s);
+                ui.slider_f32(dl, "wind##weather", &mut ambience.weather_wind, -2.0, 2.0, 2, "", s);
+            }
+            ui.checkbox(dl, "ambient particles", &mut ambience.ambient_particles, s);
+            if ambience.ambient_particles {
+                ui.combo(dl, "style##particles", &mut ambience.particle_style, &["Fireflies", "Embers"], s);
+                ui.color_picker(dl, "color##particles", &mut ambience.particle_color, s);
+                ui.slider_f32(dl, "density##particles", &mut ambience.particle_density, 0.0, 192.0, 0, "", s);
             }
             ui.separator(dl, s);
+            }
+            if subtab == 1 {
             ui.text(dl, "Smoke", s.text_dim, 1.0);
             ui.checkbox(dl, "reduce smoke effects", &mut ambience.smoke_removal, s);
+            }
         });
+        }
+        self.ext.lighting = ambience.lighting;
+        self.ext.lighting_int = ambience.lighting_intensity;
+        self.ext.fog_on = ambience.fog;
+        self.ext.fog_density = ambience.fog_density;
+    }
+
+    fn draw_skins_real(&mut self, dl: &mut DrawList, state: &GameState,
+        x: f32, y: f32, w: f32, h: f32, s: &Style) {
+        use wallbang_config::settings::AppliedSkin;
+        use wallbang_config::skin_catalog::{PAINT_CATALOG, paint_kit};
+        use crate::skin_inspect::Request;
+        let mut settings = state.settings_mut();
+        let allow_writes = settings.misc.allow_writes;
+        let skins = &mut settings.skins;
+        if self.subtab == 3 {
+            crate::skin_inspect::park();
+            let left_w = (w * 0.46).max(220.0);
+            let gap = 10.0;
+            let right_x = x + left_w + gap;
+            let right_w = (w - left_w - gap).max(160.0);
+
+            // Left: Loadout Preview (T / CT Loadout + centered 3D agent + 4 slot tiles)
+            dl.rect_rounded(x, y, left_w, h, 5.0, s.surface);
+            dl.outline_rounded(x, y, left_w, h, 5.0, 1.0, s.border);
+            let hdr_y = y + 10.0;
+            let team_w = 96.0;
+            let team_h = 24.0;
+            let team_x0 = x + (left_w - team_w * 2.0 - 6.0) * 0.5;
+            for (idx, label) in [(true, "T Loadout"), (false, "CT Loadout")] {
+                let bx = team_x0 + if idx { 0.0 } else { team_w + 6.0 };
+                let active = self.inventory_enemy == idx;
+                let hover = !self.ui.overlay_blocking() && self.ui.inside(bx, hdr_y, team_w, team_h);
+                if hover && self.ui.mouse_clicked() {
+                    self.inventory_enemy = idx;
+                }
+                let bg = if active {
+                    [s.accent[0], s.accent[1], s.accent[2], 38]
+                } else if hover {
+                    s.hovered
+                } else {
+                    s.elevated
+                };
+                dl.rect_rounded(bx, hdr_y, team_w, team_h, 3.0, bg);
+                dl.outline_rounded(bx, hdr_y, team_w, team_h, 3.0, 1.0, if active { s.accent } else { s.border });
+                let tw = dl.text_width(label, 0.9);
+                dl.text(
+                    (bx + (team_w - tw) * 0.5).floor(),
+                    (hdr_y + (team_h - dl.text_height(0.9)) * 0.5).floor(),
+                    label,
+                    if active || hover { s.text } else { s.text_dim },
+                    0.9,
+                );
+            }
+
+            let tiles_h = 56.0;
+            let vp_x = x + 12.0;
+            let vp_y = hdr_y + team_h + 10.0;
+            let vp_w = (left_w - 24.0).max(80.0);
+            let vp_h = (h - (vp_y - y) - tiles_h - 22.0).max(120.0);
+            dl.studio_stage((vp_x,vp_y,vp_w,vp_h),s.accent);
+            // Soft ground shadow under centered agent
+            let sh_w = (vp_w * 0.42).min(110.0);
+            dl.rect_rounded(vp_x + (vp_w - sh_w) * 0.5, vp_y + vp_h - 18.0, sh_w, 8.0, 4.0, [0, 0, 0, 76]);
+            dl.outline_rounded(vp_x, vp_y, vp_w, vp_h, 4.0, 1.0, s.border);
+            crate::preview::inventory_model((vp_x, vp_y, vp_w, vp_h), self.inventory_enemy);
+
+            // 4 slot tiles below agent: Weapon, Gloves, Knife, Agent
+            let tile_y = vp_y + vp_h + 10.0;
+            let tile_gap = 6.0;
+            let tile_w = (vp_w - tile_gap * 3.0) / 4.0;
+            let slot_defs: [(&str, &str, usize); 4] = [
+                ("Weapon", if skins.applied.is_empty() { "Default" } else { "Equipped" }, 0),
+                ("Gloves", if skins.gloves.def_index != 0 { "Equipped" } else { "Default" }, 2),
+                ("Knife", if skins.knife.def_index != 0 { "Equipped" } else { "Default" }, 1),
+                ("Agent", if skins.agent_enabled { "Custom" } else { "Default" }, 3),
+            ];
+            for (i, (title, sub, target_subtab)) in slot_defs.iter().enumerate() {
+                let tx = vp_x + (tile_w + tile_gap) * i as f32;
+                let active = *target_subtab == self.subtab;
+                let hover = !self.ui.overlay_blocking() && self.ui.inside(tx, tile_y, tile_w, tiles_h);
+                if hover && self.ui.mouse_clicked() {
+                    self.subtab = *target_subtab;
+                }
+                let bg = if active {
+                    [s.accent[0], s.accent[1], s.accent[2], 32]
+                } else if hover {
+                    s.hovered
+                } else {
+                    s.elevated
+                };
+                dl.rect_rounded(tx, tile_y, tile_w, tiles_h, 4.0, bg);
+                dl.outline_rounded(tx, tile_y, tile_w, tiles_h, 4.0, 1.0, if active { s.accent } else { s.border });
+                let tw = dl.text_width(title, 0.88);
+                dl.text((tx + (tile_w - tw) * 0.5).floor(), tile_y + 12.0, title, s.text, 0.88);
+                let sw = dl.text_width(sub, 0.78);
+                dl.text((tx + (tile_w - sw) * 0.5).floor(), tile_y + 32.0, sub, s.text_dim, 0.78);
+            }
+
+            // Right: Agent equipment settings
+            self.ui.child(dl, right_x, y, right_w, h, true, s, |ui, dl| {
+                ui.text(dl, "Agent equipment", s.text_dim, 1.0);
+                ui.separator(dl, s);
+                ui.checkbox(dl, "enable skin changer", &mut skins.enabled, s);
+                ui.checkbox(dl, "agent model", &mut skins.agent_enabled, s);
+                let agents: Vec<_> = wallbang_config::skin_catalog::ITEM_MODELS.iter()
+                    .filter(|(_, model)| model.starts_with("agents/") && !model.contains("/shared/")).collect();
+                if !agents.is_empty() {
+                    let labels: Vec<_> = agents.iter().map(|(_, model)| model.rsplit('/').next().unwrap_or(model).trim_end_matches(".vmdl")).collect();
+                    if skins.agent_enabled && skins.agent_def_index == 0 { skins.agent_def_index = agents[0].0; }
+                    let mut index = agents.iter().position(|(definition, _)| *definition == skins.agent_def_index).unwrap_or(0);
+                    if ui.combo(dl, "agent##econ", &mut index, &labels, s) { skins.agent_def_index = agents[index.min(agents.len() - 1)].0; }
+                }
+                let _ = allow_writes;
+            });
+            return;
+        }
+
+        let category = self.subtab.min(2);
+        let items: Vec<_> = CATALOG_ITEMS.iter().filter(|i| i.category == category).collect();
+        if items.is_empty() { crate::skin_inspect::park(); return; }
+        let browse = self.ext.skins_browsing.and_then(|id| items.iter().copied().find(|i| i.def_index == id));
+        let footer_y = y + h - 38.0;
+        let enabled_label = if skins.enabled { "Changer: on" } else { "Changer: off" };
+        if self.ui.button_at(dl, enabled_label, x+12.0, footer_y+4.0, 112.0, 26.0, s) { skins.enabled = !skins.enabled; }
+        let backend_status = wallbang_core::skin_status::message();
+        dl.text(x+134.0, footer_y+11.0, &backend_status, s.text_dim, 0.7);
+        if let Some(item) = browse {
+            if self.skin_draft.def_index != item.def_index {
+                self.skin_draft = match item.category {
+                    1 => (skins.knife.def_index==item.def_index).then_some(&skins.knife),
+                    2 => (skins.gloves.def_index==item.def_index).then_some(&skins.gloves),
+                    _ => skins.applied.iter().find(|c|c.def_index==item.def_index),
+                }.cloned().unwrap_or(AppliedSkin { def_index:item.def_index,..Default::default() });
+            }
+            if self.ui.button_at(dl, "< Back", x+12.0, y+8.0, 68.0, 26.0, s) {
+                self.ext.skins_browsing = None; self.skin_scroll = 0; self.skin_dragging = false;
+                crate::skin_inspect::park(); return;
+            }
+            let label = paint_kit(self.skin_draft.paint_kit_id).map(|p| p.name).unwrap_or("Default");
+            let rarity_col = s.rarity_color(item.rarity as u8);
+            // Collection badge icon + Weapon | Finish title + collection subtitle
+            let badge_x = x + 90.0;
+            let badge_y = y + 6.0;
+            dl.rect_rounded(badge_x, badge_y, 26.0, 26.0, 4.0, s.elevated);
+            dl.outline_rounded(badge_x, badge_y, 26.0, 26.0, 4.0, 1.0, rarity_col);
+            dl.circle_filled(badge_x + 13.0, badge_y + 13.0, 5.5, rarity_col);
+            dl.text(badge_x + 34.0, y + 5.0, &format!("{} | {}", item.name, label), s.text, 0.96);
+            dl.text(badge_x + 34.0, y + 20.0, "CS2 Collection", s.text_dim, 0.78);
+            dl.rect_rounded(x + 12.0, y + 36.0, w - 24.0, 2.5, 1.0, rarity_col);
+
+            let rect = (x + 12.0, y + 44.0, w - 24.0, (footer_y - y - 94.0).max(160.0));
+            let model_h = rect.3 * 0.57;
+            let model_rect = (rect.0, rect.1, rect.2, model_h);
+            let bar_y = rect.1 + rect.3 + 4.0;
+
+            // Search + Options + Sort + Apply bar
+            let btn_w = 72.0;
+            let search_w = (w - 24.0 - btn_w * 3.0 - 18.0).max(110.0);
+            self.ui.child(dl, x + 12.0, bar_y, search_w, 36.0, false, s, |ui, dl| {
+                ui.text_input(dl, "##skin_catalog_search", &mut self.ext.skins_search, 64, "Search finishes...", s);
+            });
+            let opt_x = x + 12.0 + search_w + 6.0;
+            let sort_x = opt_x + btn_w + 6.0;
+            let apply_x = sort_x + btn_w + 6.0;
+            const FX_MODES: [&str; 8] = [
+                "Disabled",
+                "Shaded",
+                "Solid",
+                "Glow",
+                "Glow Outline",
+                "Iridescent",
+                "Water Flow",
+                "Glossy",
+            ];
+            const STATTRAK_MODES: [&str; 2] = ["None", "On"];
+            self.ui.popup_button(dl, "Options", "skin_finish_options", (opt_x, bar_y + 2.0, btn_w, 26.0), 268.0, 320.0, s, |ui, dl| {
+                ui.text(dl, "Options", s.text, 0.96);
+                ui.separator(dl, s);
+                ui.text_input(dl, "Name##skin_opt_name", &mut self.skin_draft.custom_name, 160, "Custom name...", s);
+                ui.slider_i32(dl, "Seed##skin_opt_seed", &mut self.skin_draft.seed, 0, 1000, "", s);
+                ui.wear_slider(dl, "Wear##skin_opt_wear", &mut self.skin_draft.wear, s);
+                let mut st_idx = usize::from(self.skin_draft.stattrak);
+                if ui.combo(dl, "StatTrak##skin_opt_st", &mut st_idx, &STATTRAK_MODES, s) {
+                    self.skin_draft.stattrak = st_idx == 1;
+                }
+                ui.combo(dl, "Model##skin_opt_model", &mut self.inspect_model_fx, &FX_MODES, s);
+                ui.combo(dl, "Overlay##skin_opt_overlay", &mut self.inspect_overlay_fx, &FX_MODES, s);
+                ui.color_picker(dl, "Colorize StatTrak##skin_opt_stcol", &mut self.inspect_stattrak_col, s);
+            });
+            let sort_lbl = if self.skin_sort == 0 { "Sort: A-Z" } else { "Sort: ID" };
+            if self.ui.button_at(dl, sort_lbl, sort_x, bar_y + 2.0, btn_w, 26.0, s) {
+                self.skin_sort = 1 - self.skin_sort;
+            }
+            if self.ui.button_at(dl, "Apply", apply_x, bar_y + 2.0, btn_w, 26.0, s) {
+                let draft = self.skin_draft.clone();
+                match item.category {
+                    1 => skins.knife = draft,
+                    2 => skins.gloves = draft,
+                    _ => {
+                        if let Some(slot) = skins.applied.iter_mut().find(|c| c.def_index == draft.def_index) {
+                            *slot = draft;
+                        } else {
+                            skins.applied.push(draft);
+                        }
+                    }
+                }
+            }
+
+            // Right-side Stickers (5 slots) + Moving rotation toggle inside model viewport
+            let st_slot = 26.0;
+            let st_gap = 5.0;
+            let st_total_w = st_slot * 5.0 + st_gap * 4.0;
+            let st_x = model_rect.0 + model_rect.2 - st_total_w - 8.0;
+            let st_y = model_rect.1 + model_rect.3 - st_slot - 8.0;
+            // Moving toggle above stickers
+            let mov_w = 74.0;
+            let mov_h = 20.0;
+            let mov_x = model_rect.0 + model_rect.2 - mov_w - 8.0;
+            let mov_y = st_y - mov_h - 6.0;
+            let mov_hover = !self.ui.overlay_blocking() && self.ui.inside(mov_x, mov_y, mov_w, mov_h);
+            if mov_hover && self.ui.mouse_clicked() {
+                self.inspect_moving = !self.inspect_moving;
+            }
+            dl.rect_rounded(
+                mov_x,
+                mov_y,
+                mov_w,
+                mov_h,
+                3.0,
+                if self.inspect_moving {
+                    [s.accent[0], s.accent[1], s.accent[2], 44]
+                } else if mov_hover {
+                    s.hovered
+                } else {
+                    s.elevated
+                },
+            );
+            dl.outline_rounded(mov_x, mov_y, mov_w, mov_h, 3.0, 1.0, if self.inspect_moving { s.accent } else { s.border });
+            let mov_tw = dl.text_width("Moving", 0.8);
+            dl.text(
+                (mov_x + (mov_w - mov_tw) * 0.5).floor(),
+                (mov_y + (mov_h - dl.text_height(0.8)) * 0.5).floor(),
+                "Moving",
+                if self.inspect_moving || mov_hover { s.text } else { s.text_dim },
+                0.8,
+            );
+            dl.text(st_x, mov_y + 3.0, "Stickers", s.text_dim, 0.78);
+            for slot_i in 0..5 {
+                let sx = st_x + (st_slot + st_gap) * slot_i as f32;
+                dl.rect_rounded(sx, st_y, st_slot, st_slot, st_slot * 0.5, s.elevated);
+                dl.outline_rounded(sx, st_y, st_slot, st_slot, st_slot * 0.5, 1.0, s.border);
+            }
+
+            if self.inspect_moving && !self.skin_dragging {
+                skins.inspect_yaw = (skins.inspect_yaw + 0.35).rem_euclid(360.0);
+            }
+            if self.ui.mouse_clicked() && self.ui.inside(model_rect.0, model_rect.1, model_rect.2, model_rect.3) && !mov_hover && !self.ui.overlay_blocking() { self.skin_dragging = true; }
+            if !self.ui.mouse_down() { self.skin_dragging = false; }
+            if self.skin_dragging {
+                let delta = self.ui.mouse_delta();
+                skins.inspect_yaw = (skins.inspect_yaw + delta.x * 0.6).rem_euclid(360.0);
+                skins.inspect_pitch = (skins.inspect_pitch - delta.y * 0.35).clamp(-60.0,60.0);
+            }
+            skins.inspect_zoom = (skins.inspect_zoom + self.ui.take_wheel_at(model_rect)*0.08).clamp(0.65,1.8);
+            let query = self.ext.skins_search.to_ascii_lowercase();
+            let allow_all = self.skin_all_paints && item.category != 2;
+            let mut kits: Vec<_> = PAINT_CATALOG.iter().filter(|kit| (allow_all || wallbang_config::skin_catalog::compatible(item.def_index,kit.id))
+                && (query.is_empty() || kit.name.to_ascii_lowercase().contains(&query) || kit.id.to_string() == query)).collect();
+            if self.skin_sort == 0 { kits.sort_by_key(|kit| kit.name); } else { kits.sort_by_key(|kit| kit.id); }
+            let grid_rect = (rect.0, rect.1+model_h+12.0, rect.2, rect.3-model_h-12.0);
+            let columns = 5usize; let rows = 2usize;
+            let total_rows = kits.len().div_ceil(columns);
+            let wheel = self.ui.take_wheel_at(grid_rect);
+            self.skin_scroll = ((self.skin_scroll as f32 - wheel).max(0.0) as usize).min(total_rows.saturating_sub(rows));
+            let cw = (rect.2 - 8.0*(columns-1) as f32)/columns as f32;
+            let ch = (grid_rect.3-8.0)/rows as f32;
+            for (slot,kit) in kits.iter().skip(self.skin_scroll*columns).take(columns*rows).enumerate() {
+                let card_rect = (grid_rect.0+(cw+8.0)*(slot%columns) as f32, grid_rect.1+(ch+8.0)*(slot/columns) as f32, cw,ch);
+                let selected = kit.id == self.skin_draft.paint_kit_id;
+                dl.rect_rounded(card_rect.0,card_rect.1,cw,ch,4.0,if selected { s.active } else { s.elevated });
+                dl.text(card_rect.0+5.0,card_rect.1+ch-17.0,kit.name,s.text_dim,0.65);
+                if self.ui.mouse_clicked() && !self.ui.overlay_blocking() && self.ui.inside(card_rect.0,card_rect.1,cw,ch) { self.skin_draft.paint_kit_id = kit.id; }
+                dl.inventory_icon(item.def_index,kit.id,(card_rect.0+4.0,card_rect.1+2.0,cw-8.0,(ch-21.0).max(1.0)));
+                dl.rect(card_rect.0,card_rect.1+ch-3.0,cw,3.0,RARITY_COLORS[item.rarity.min(7)]);
+            }
+            if total_rows > rows {
+                let thumb_h = grid_rect.3*rows as f32/total_rows as f32;
+                dl.rect(grid_rect.0+grid_rect.2-3.0,grid_rect.1+(grid_rect.3-thumb_h)*self.skin_scroll as f32/(total_rows-rows) as f32,3.0,thumb_h,s.accent);
+            }
+            crate::skin_inspect::set_request(Some(Request { rect:[rect.0,rect.1,rect.2,model_h],
+                definition:item.def_index,paint:self.skin_draft.paint_kit_id,yaw:skins.inspect_yaw,pitch:skins.inspect_pitch,zoom:skins.inspect_zoom,
+                show_model:true }));
+            if !crate::skin_inspect::capture_ready() {
+                let message=crate::skin_inspect::error().unwrap_or_else(||"Preparing weapon mesh...".into());
+                dl.text(rect.0+12.0,rect.1+14.0,&message,s.text_dim,0.8);
+            } else if self.skin_draft.paint_kit_id!=0 && wallbang_resources::weapon_finishes::texture(self.skin_draft.paint_kit_id).is_none() {
+                dl.text(rect.0+12.0,rect.1+14.0,"Preview: base finish",s.text_dim,0.8);
+            }
+            if self.ui.button_at(dl,"Apply",x+w-76.0,footer_y+4.0,64.0,26.0,s) {
+                self.skin_draft.def_index = item.def_index;
+                match item.category {
+                    1 => skins.knife = self.skin_draft.clone(),
+                    2 => skins.gloves = self.skin_draft.clone(),
+                    _ => { if let Some(config) = skins.applied.iter_mut().find(|c| c.def_index==item.def_index) { *config=self.skin_draft.clone(); }
+                        else { skins.applied.push(self.skin_draft.clone()); } }
+                }
+                skins.enabled = true;
+                skins.apply_revision=skins.apply_revision.wrapping_add(1);
+            }
+            if self.ui.button_at(dl,"Sort",x+w-132.0,footer_y+4.0,48.0,26.0,s) { self.skin_sort = 1-self.skin_sort.min(1); self.skin_scroll=0; }
+            if item.category != 2 {
+                let all_label = if self.skin_all_paints { "All" } else { "Native" };
+                if self.ui.button_at(dl,all_label,x+w-196.0,footer_y+4.0,56.0,26.0,s) { self.skin_all_paints = !self.skin_all_paints; self.skin_scroll=0; }
+            }
+            return;
+        }
+        self.ext.skins_browsing = None;
+        let agent_w = (w*0.29).clamp(130.0,180.0);
+        dl.text(x+12.0,y+14.0,if self.inventory_enemy { "T equipment" } else { "CT equipment" },s.text,0.9);
+        if self.ui.button_at(dl,"CT / T",x+agent_w-66.0,y+7.0,62.0,26.0,s) { self.inventory_enemy = !self.inventory_enemy; }
+        let agent_rect = (x+8.0,y+43.0,agent_w-16.0,(footer_y-y-59.0).max(100.0));
+        dl.studio_stage(agent_rect,s.accent);
+        crate::preview::inventory_model(agent_rect,self.inventory_enemy);
+        let rect = (x+agent_w+8.0,y+43.0,(w-agent_w-20.0).max(120.0),(footer_y-y-51.0).max(100.0));
+        let rows = ((rect.3+8.0)/83.0).floor().max(1.0) as usize;
+        let columns = 3usize;
+        let column = |def:i16| -> usize { if [1,2,3,4,30,32,36,61,63,64].contains(&def) {0} else if [7,8,9,10,11,13,16,38,39,40,60].contains(&def) {2} else {1} };
+        let mut groups: [Vec<&SkinItem>;3] = Default::default();
+        for item in &items { let col = if category==0 { column(item.def_index) } else { groups.iter().enumerate().min_by_key(|(_,v)|v.len()).map(|(i,_)|i).unwrap_or(0) }; groups[col].push(*item); }
+        let max_rows = groups.iter().map(|v|v.len()).max().unwrap_or(0);
+        self.skin_scroll = ((self.skin_scroll as f32-self.ui.take_wheel_at(rect)).max(0.0) as usize).min(max_rows.saturating_sub(rows));
+        let cw = (rect.2-16.0)/columns as f32;
+        for (col,group) in groups.iter().enumerate() {
+            dl.text(rect.0+(cw+8.0)*col as f32,y+16.0,if category==0 { ["Pistols","Mid-tier","Rifles"][col] } else { ["Collection","Models","Equipment"][col] },s.text_dim,0.8);
+            for (row,item) in group.iter().skip(self.skin_scroll).take(rows).enumerate() {
+                let card_rect = (rect.0+(cw+8.0)*col as f32,rect.1+83.0*row as f32,cw,75.0);
+                let config = match item.category { 1 => (skins.knife.def_index==item.def_index).then_some(&skins.knife),2 => (skins.gloves.def_index==item.def_index).then_some(&skins.gloves),_ => skins.applied.iter().find(|c|c.def_index==item.def_index) };
+                let paint = config.map(|c|c.paint_kit_id).unwrap_or(0);
+                let selected = config.is_some();
+                dl.rect_rounded(card_rect.0,card_rect.1,cw,75.0,4.0,if selected {s.active} else {s.elevated});
+                dl.text(card_rect.0+6.0,card_rect.1+56.0,item.name,s.text_dim,0.75);
+                dl.rect(card_rect.0,card_rect.1+72.0,cw,3.0,RARITY_COLORS[item.rarity.min(7)]);
+                if self.ui.mouse_clicked() && !self.ui.overlay_blocking() && self.ui.inside(card_rect.0,card_rect.1,cw,75.0) {
+                    self.ext.skins_browsing=Some(item.def_index);self.skin_draft=config.cloned().unwrap_or(AppliedSkin { def_index:item.def_index,..Default::default() });self.skin_scroll=0;self.ext.skins_search.clear();
+                }
+                dl.inventory_icon(item.def_index,paint,(card_rect.0+5.0,card_rect.1+3.0,cw-10.0,49.0));
+            }
+        }
+        crate::skin_inspect::park();
     }
 
     fn draw_unavailable(&mut self, dl: &mut DrawList, x: f32, y: f32, w: f32, h: f32, s: &Style) {
@@ -1005,22 +1615,56 @@ impl Menu {
         h: f32,
         s: &Style,
     ) {
+        let _subtab = self.subtab.min(1);
         let mut settings = state.settings_mut();
-        self.ui.child(dl, x, y, w, h.min(320.0), true, s, |ui, dl| {
+        let col_gap = 10.0;
+        let col_w = ((w - col_gap) * 0.5).max(160.0);
+        let card_h = h.min(340.0);
+        self.ui.child(dl, x, y, col_w, card_h, true, s, |ui, dl| {
             ui.text(dl, "Movement", s.text_dim, 1.0);
             ui.separator(dl, s);
             ui.checkbox(dl, "bhop", &mut settings.misc.bhop, s);
+            ui.popup(dl, "##bhop_bind", POPUP_W, 100.0, s, |ui, dl| {
+                movement_binding(ui, dl, &mut settings.misc.movement.bhop_bind, s);
+            });
             ui.checkbox(dl, "autostrafe", &mut settings.misc.autostrafe, s);
             ui.checkbox(dl, "jumpbug", &mut settings.misc.movement.jumpbug, s);
+            ui.popup(dl, "##jumpbug_bind", POPUP_W, 100.0, s, |ui, dl| {
+                movement_binding(ui, dl, &mut settings.misc.movement.jumpbug_bind, s);
+            });
             ui.checkbox(dl, "mini jump", &mut settings.misc.movement.mini_jump, s);
             ui.checkbox(dl, "edgejump", &mut settings.misc.movement.edgejump, s);
-            ui.separator(dl, s);
-            ui.text(dl, "Game", s.text_dim, 1.0);
-            ui.checkbox(dl, "reveal radar", &mut settings.misc.reveal_radar, s);
-            ui.separator(dl, s);
-            ui.checkbox(dl, "allow writes", &mut settings.misc.allow_writes, s);
-            ui.text(dl, "Required for movement and combat writes.", s.text_dim, 0.9);
+            ui.popup(dl, "##edgejump_bind", POPUP_W, 100.0, s, |ui, dl| {
+                movement_binding(ui, dl, &mut settings.misc.movement.edgejump_bind, s);
+            });
         });
+        self.ui.child(dl, x + col_w + col_gap, y, col_w, h.min(420.0), true, s, |ui, dl| {
+            ui.text(dl, "HUD Widgets & Utility", s.text_dim, 1.0);
+            ui.separator(dl, s);
+            ui.checkbox(dl, "watermark", &mut settings.misc.watermark, s);
+            ui.checkbox(dl, "hotkeys", &mut self.ext.hotkeys_hud, s);
+            ui.checkbox(dl, "spectators", &mut self.ext.spectator_list, s);
+            ui.checkbox(dl, "indicators", &mut self.ext.indicators_hud, s);
+            ui.checkbox(dl, "Spotify player", &mut self.ext.spotify_hud, s);
+            ui.checkbox(dl, "hit log", &mut settings.misc.hit_log, s);
+            ui.checkbox(dl, "miss log", &mut settings.misc.miss_log, s);
+            ui.checkbox(dl, "vote revealer", &mut settings.misc.vote_revealer, s);
+            ui.separator(dl, s);
+            ui.text(dl, "Clantag", s.text_dim, 1.0);
+            ui.checkbox(dl, "enable clantag##ct", &mut settings.misc.clantag.enabled, s);
+            if settings.misc.clantag.enabled {
+                const CT_STYLES: [&str; 5] = ["Fixed", "Typewriter", "Scroll", "Bounce", "Blink"];
+                ui.combo(dl, "animation##ct", &mut settings.misc.clantag.style, &CT_STYLES, s);
+                ui.slider_i32(dl, "speed (ms)##ct", &mut settings.misc.clantag.step_ms, 250, 2000, "ms", s);
+                ui.text_input(dl, "phrase##ct", &mut settings.misc.clantag.phrase, 32, "WALLBANG", s);
+            }
+            ui.separator(dl, s);
+            ui.checkbox(dl, "reveal radar", &mut settings.misc.reveal_radar, s);
+        });
+        self.ext.jumpbug = settings.misc.movement.jumpbug;
+        self.ext.mini_jump = settings.misc.movement.mini_jump;
+        self.ext.edgejump = settings.misc.movement.edgejump;
+        self.ext.reveal_radar = settings.misc.reveal_radar;
     }
 
     #[inline]
@@ -1099,9 +1743,80 @@ impl Menu {
         let s = Style::new(accent);
         let th = dl.text_height(1.0);
 
+        crate::music::set_art_rect(None);
+        if self.ext.spotify_hud {
+            if let Some(track) = crate::music::snapshot() {
+                let w = 380.0;
+                let x = ((screen_w - w) * 0.5).max(8.0);
+                let y = (screen_h - 146.0).max(8.0);
+                dl.chamfered_panel(x, y, w, 126.0, 5.0, [8, 8, 10, 240], [36, 36, 40, 255]);
+                dl.rect(x + 14.0, y, 42.0, 2.0, s.accent);
+                dl.rect_rounded(x + 12.0, y + 14.0, 76.0, 76.0, 3.0, s.elevated);
+                if !self.open || !self.menu_covers(x + 50.0, y + 52.0) {
+                    crate::music::set_art_rect(Some((x + 14.0, y + 16.0, 72.0, 72.0)));
+                }
+                dl.text(x + 100.0, y + 12.0, "SPOTIFY", s.accent, 0.75);
+                let status = if track.playing { "PLAYING" } else { "PAUSED" };
+                dl.text(x+w-14.0-dl.text_width(status,0.65), y+13.0, status, s.text_dim, 0.65);
+                let title = if track.title.trim().is_empty() { "Unknown title" } else { track.title.as_str() };
+                let title = dl.truncate(title, w - 114.0, 1.0);
+                let artist = dl.truncate(&track.artist, w - 114.0, 0.85);
+                dl.text(x + 100.0, y + 30.0, &title, s.text, 1.0);
+                dl.text(x + 100.0, y + 49.0, &artist, s.text_dim, 0.85);
+                for (i,id) in ["##music_previous","##music_play","##music_next"].iter().enumerate() {
+                    let bx = x + 100.0 + i as f32 * 38.0;
+                    if self.open && self.ui.button_at(dl, id, bx, y + 69.0, 30.0, 22.0, &s) {
+                        crate::music::command(i as u8 + 1);
+                    }
+                    let cx = bx + 15.0;
+                    let cy = y + 80.0;
+                    let color = if i == 1 { s.accent } else { s.text_dim };
+                    match i {
+                        0 => {
+                            dl.rect(cx-5.0,cy-4.0,1.5,8.0,color);
+                            dl.convex_poly(&[(cx+4.0,cy-4.0),(cx-3.0,cy),(cx+4.0,cy+4.0)],color);
+                        }
+                        1 if track.playing => {
+                            dl.rect(cx-4.0,cy-4.0,2.5,8.0,color);
+                            dl.rect(cx+1.5,cy-4.0,2.5,8.0,color);
+                        }
+                        1 => dl.convex_poly(&[(cx-3.0,cy-5.0),(cx+5.0,cy),(cx-3.0,cy+5.0)],color),
+                        _ => {
+                            dl.rect(cx+4.0,cy-4.0,1.5,8.0,color);
+                            dl.convex_poly(&[(cx-4.0,cy-4.0),(cx+3.0,cy),(cx-4.0,cy+4.0)],color);
+                        }
+                    }
+                }
+                let elapsed = if track.playing { track.sampled.elapsed().as_secs_f64() } else { 0.0 };
+                let position = (track.position + elapsed).clamp(0.0, track.duration.max(0.0));
+                let fraction = if track.duration > 0.0 { (position / track.duration) as f32 } else { 0.0 };
+                dl.rect_rounded(x + 12.0, y + 99.0, w - 24.0, 3.0, 1.5, s.border);
+                dl.rect_rounded(x + 12.0, y + 99.0, (w - 24.0) * fraction, 3.0, 1.5, s.accent);
+                let timestamp = |seconds: f64| { let t = seconds.max(0.0) as u64; format!("{}:{:02}", t / 60, t % 60) };
+                dl.text(x + 12.0, y + 108.0, &timestamp(position), s.text_dim, 0.7);
+                let end = timestamp(track.duration);
+                dl.text(x + w - 12.0 - dl.text_width(&end, 0.7), y + 108.0, &end, s.text_dim, 0.7);
+            }
+        }
+
         // 1) Watermark: 28px tall, 14px parallel slants, 18px padding (C++ ui.hpp).
         if state.settings().misc.watermark {
-            let segs = ["nexz0r", "0 ms", "0 u/s", "169 fps", "64 tick", "14:04"];
+            let snapshot = state.snapshot();
+            let nickname = snapshot.local_name.as_deref().unwrap_or("player").to_owned();
+            let ping = snapshot.local_ping;
+            let velocity = snapshot.local_velocity;
+            let speed = (velocity.x * velocity.x + velocity.y * velocity.y).sqrt().round() as i32;
+            drop(snapshot);
+            let fps = crate::hooks::frame_fps().round() as i32;
+            let map = wallbang_core::engine::map_name().unwrap_or_else(|| "menu".to_owned());
+            let segs = [
+                nickname,
+                map,
+                format!("{ping} ms"),
+                format!("{speed} u/s"),
+                format!("{fps} fps"),
+                local_clock(),
+            ];
             let brand = "WALLBANG";
             let padding = 18.0;
             let logo_w = 30.0;
@@ -1169,11 +1884,19 @@ impl Menu {
 
         // 2) Active hotkeys: draggable chamfered panel on the left.
         if self.ext.hotkeys_hud {
-            let rows = [
-                ("quick peek", "hold"),
-                ("minimum damage", "11 dmg"),
-                ("slow walk", "hold"),
-            ];
+            let settings = state.settings();
+            let (bhop, edgejump, jumpbug) = wallbang_core::state::movement_activity();
+            let mut rows: Vec<(&str, &str)> = Vec::new();
+            if bhop { rows.push(("bhop", "active")); }
+            if edgejump { rows.push(("edgejump", "active")); }
+            if jumpbug { rows.push(("jumpbug", "active")); }
+            if settings.misc.autostrafe { rows.push(("autostrafe", "active")); }
+            if settings.combat.ragebot.enabled { rows.push(("ragebot", "active")); }
+            if settings.combat.legit.enabled { rows.push(("legitbot", "active")); }
+            drop(settings);
+            if rows.is_empty() && !self.open {
+                // An empty runtime widget is intentionally hidden outside menu edit mode.
+            } else {
             let w = 248.0;
             let header_h = 28.0;
             let row_h = 24.0;
@@ -1216,11 +1939,15 @@ impl Menu {
                     1.0,
                 );
             }
+            }
         }
 
         // 3) Spectators: draggable chamfered panel on the right.
         if self.ext.spectator_list && self.tab != 2 {
-            let rows = [("observer_01", "watching"), ("observer_02", "watching")];
+            let rows: Vec<String> = state.snapshot().spectators.iter().map(|name| name.to_string()).collect();
+            if rows.is_empty() && !self.open {
+                // Hidden outside menu edit mode when nobody observes the local pawn.
+            } else {
             let w = 220.0;
             let header_h = 28.0;
             let row_h = 24.0;
@@ -1244,7 +1971,7 @@ impl Menu {
                 1.0,
             );
             dl.line(x + 1.0, y + header_h, x + w - 1.0, y + header_h, 1.0, s.border);
-            for (i, (name, val)) in rows.iter().enumerate() {
+            for (i, name) in rows.iter().enumerate() {
                 let ry = y + header_h + i as f32 * row_h;
                 dl.text(
                     x + 12.0,
@@ -1253,6 +1980,7 @@ impl Menu {
                     s.text,
                     1.0,
                 );
+                let val = "watching";
                 let vw = dl.text_width(val, 1.0);
                 dl.text(
                     x + w - 12.0 - vw,
@@ -1262,11 +1990,22 @@ impl Menu {
                     1.0,
                 );
             }
+            }
         }
 
         // 4) Status indicators: draggable panel.
         if self.ext.indicators_hud {
-            let rows = [("AA", "back"), ("DMG", "30"), ("HC", "60%"), ("AIR STOP", "on")];
+            let settings = state.settings();
+            let (bhop, edgejump, jumpbug) = wallbang_core::state::movement_activity();
+            let mut rows: Vec<(&str, &str)> = Vec::new();
+            if bhop { rows.push(("BHOP", "on")); }
+            if edgejump { rows.push(("EDGEJUMP", "on")); }
+            if jumpbug { rows.push(("JUMPBUG", "on")); }
+            if settings.misc.autostrafe { rows.push(("AUTOSTRAFE", "on")); }
+            if settings.postprocess.enabled { rows.push(("PP", "on")); }
+            if settings.misc.reveal_radar { rows.push(("RADAR", "on")); }
+            drop(settings);
+            if !rows.is_empty() || self.open {
             let w = 150.0;
             let row_h = 24.0;
             let h = rows.len() as f32 * row_h + 4.0;
@@ -1290,6 +2029,44 @@ impl Menu {
                     s.accent,
                     1.0,
                 );
+            }
+            }
+        }
+
+        // 5) Top-left Hit / Miss / Vote event logs (live ring buffer from wallbang_core::event_log).
+        let (hit_on, miss_on, vote_on) = {
+            let m = &state.settings().misc;
+            (m.hit_log, m.miss_log, m.vote_revealer)
+        };
+        if hit_on || miss_on || vote_on {
+            let entries = wallbang_core::event_log::snapshot(hit_on, miss_on, vote_on);
+            let mut ly = 12.0f32;
+            let lx = 12.0f32;
+            let pill_h = 24.0f32;
+            for (entry, alpha) in entries {
+                let pw = dl.text_width(&entry.prefix, 1.0);
+                let hw = dl.text_width(&entry.highlight, 1.0);
+                let sw = dl.text_width(&entry.suffix, 1.0);
+                let total_w = (22.0 + pw + hw + sw).max(120.0);
+                let a_bg = (232.0 * alpha) as u8;
+                let a_fg = (255.0 * alpha) as u8;
+                dl.rect_rounded(lx, ly, total_w, pill_h, 3.0, [8, 8, 10, a_bg]);
+                dl.outline_rounded(lx, ly, total_w, pill_h, 3.0, 1.0, [30, 30, 34, a_bg]);
+                dl.rect(lx + 4.0, ly + 5.0, 2.0, pill_h - 10.0, [s.accent[0], s.accent[1], s.accent[2], a_fg]);
+                let ty = (ly + (pill_h - th) * 0.5).floor();
+                let mut tx = lx + 12.0;
+                if !entry.prefix.is_empty() {
+                    dl.text(tx, ty, &entry.prefix, [s.text[0], s.text[1], s.text[2], a_fg], 1.0);
+                    tx += pw;
+                }
+                if !entry.highlight.is_empty() {
+                    dl.text(tx, ty, &entry.highlight, [s.accent[0], s.accent[1], s.accent[2], a_fg], 1.0);
+                    tx += hw;
+                }
+                if !entry.suffix.is_empty() {
+                    dl.text(tx, ty, &entry.suffix, [s.text_dim[0], s.text_dim[1], s.text_dim[2], a_fg], 1.0);
+                }
+                ly += pill_h + 4.0;
             }
         }
     }
@@ -1387,27 +2164,44 @@ impl Menu {
             return;
         }
         let defs = SUBTABS[self.tab];
-        let tabs_x = x + title_w + 24.0;
-        let btn_w = (w - title_w - 24.0).max(1.0) / defs.len().max(1) as f32;
+        let mut bx = x + title_w + 22.0;
         let th = dl.text_height(1.0);
+        let seg_h = 28.0;
+        let seg_y = (y + (SUBTAB_BAR_H - seg_h) * 0.5).floor();
+        let pad_x = 12.0;
+        let gap_x = 4.0;
 
         for (i, &name) in defs.iter().enumerate() {
-            let bx = tabs_x + btn_w * i as f32;
-            let hover = !self.ui.overlay_blocking() && self.ui.inside(bx, y, btn_w, SUBTAB_BAR_H);
+            let tw = dl.text_width(name, 1.0);
+            let btn_w = (tw + pad_x * 2.0).max(62.0);
+            if bx + btn_w > x + w - 8.0 {
+                break;
+            }
+            let hover = !self.ui.overlay_blocking() && self.ui.inside(bx, seg_y, btn_w, seg_h);
             if hover && self.ui.mouse_clicked() {
+                if self.subtab != i {
+                    self.ext.skins_browsing = None;
+                    self.skin_scroll = 0;
+                }
                 self.subtab = i;
                 self.ui.close_overlays();
             }
             let selected = self.subtab == i;
-            if hover {
-                dl.rect_rounded(bx, y, btn_w, SUBTAB_BAR_H - 1.0, WIDGET_ROUNDING, s.elevated);
-            }
             if selected {
-                dl.rect(bx + 10.0, y + SUBTAB_BAR_H - 2.0, (btn_w - 20.0).max(1.0), 2.0, s.accent);
+                dl.rect_rounded(bx, seg_y, btn_w, seg_h, WIDGET_ROUNDING, s.elevated);
+                dl.rect_rounded(
+                    bx + 6.0,
+                    seg_y + seg_h - 2.0,
+                    (btn_w - 12.0).max(1.0),
+                    2.0,
+                    1.0,
+                    s.accent,
+                );
+            } else if hover {
+                dl.rect_rounded(bx, seg_y, btn_w, seg_h, WIDGET_ROUNDING, s.hovered);
             }
-            let tw = dl.text_width(name, 1.0);
             let col = if selected {
-                s.accent
+                s.text
             } else if hover {
                 s.text
             } else {
@@ -1415,11 +2209,12 @@ impl Menu {
             };
             dl.text(
                 (bx + (btn_w - tw) * 0.5).floor(),
-                (y + (SUBTAB_BAR_H - th) * 0.5).floor(),
+                (seg_y + (seg_h - th) * 0.5).floor(),
                 name,
                 col,
                 1.0,
             );
+            bx += btn_w + gap_x;
         }
     }
 
@@ -1483,7 +2278,7 @@ impl Menu {
         self.ui.child(dl, right_x, y + top_h + GAP, col_w, bottom_h, true, s, |ui, dl| {
             ui.text(dl, "Runtime", s.text_dim, 1.0);
             ui.separator(dl, s);
-            ui.text(dl, "Writes require Allow writes in Config.", s.text_dim, 0.9);
+            ui.text(dl, "Game writes enabled.", s.text_dim, 0.9);
             ui.text(dl, "Movement controls are in Misc.", s.text_dim, 0.9);
         });
     }
@@ -1492,31 +2287,48 @@ impl Menu {
     fn draw_legitbot(&mut self, dl: &mut DrawList, state: &GameState, x: f32, y: f32, w: f32, h: f32, s: &Style) {
         let mut settings = state.settings_mut();
         let combat = &mut settings.combat;
-        // Seven rows (title, separator, combo, two checkboxes, slider,
-        // multicombo) no longer fit in the old 178px box and were clipped.
-        let master_h = 232.0;
+        let col_w = ((w - GAP) * 0.5).max(160.0);
+        let right_x = x + col_w + GAP;
+        let mut selected = combat.legit.weapons.min(5);
+        let idx = selected;
+        let wg = &mut combat.legit.groups[idx];
 
-        self.ui.child(dl, x, y, w, master_h, true, s, |ui, dl| {
+        self.ui.child(dl, x, y, col_w, h, true, s, |ui, dl| {
             ui.text(dl, "Aimbot", s.text_dim, 1.0);
             ui.separator(dl, s);
-            ui.combo(dl, "weapon group##legit", &mut combat.legit.weapons, &WEAPON_GROUPS, s);
-            let idx = combat.legit.weapons.min(5);
-            combat.legit.weapons = idx;
-            let wg = &mut combat.legit.groups[idx];
+            ui.combo(dl, "weapon group##legit", &mut selected, &WEAPON_GROUPS, s);
             ui.checkbox(dl, "enabled", &mut combat.legit.enabled, s);
             ui.checkbox(dl, "aimbot", &mut wg.aimbot, s);
             ui.slider_f32(dl, "fov", &mut wg.fov, 0.5, 30.0, 1, " deg", s);
             ui.slider_i32(dl, "smooth", &mut wg.smooth, 0, 100, "", s);
-            ui.multicombo(dl, "hitboxes", &mut wg.hitboxes, &LEGIT_HITBOXES, s);
+            ui.checkbox(dl, "recoil control", &mut wg.rcs, s);
+            if wg.rcs {
+                ui.slider_i32(dl, "rcs minimum", &mut wg.rcs_min, 0, 200, "%", s);
+                ui.slider_i32(dl, "rcs maximum", &mut wg.rcs_max, 0, 200, "%", s);
+            }
+            ui.checkbox(dl, "visualize fov", &mut wg.visualize_fov, s);
+            if wg.visualize_fov {
+                ui.color_picker(dl, "fov color##legit", &mut wg.fov_color, s);
+            }
         });
 
-        self.ui.child(dl, x, y + master_h + GAP, w, (h - master_h - GAP).max(80.0), true, s, |ui, dl| {
-            ui.text(dl, "Runtime", s.text_dim, 1.0);
+        self.ui.child(dl, right_x, y, col_w, h, true, s, |ui, dl| {
+            ui.text(dl, "Hitboxes & Trigger", s.text_dim, 1.0);
             ui.separator(dl, s);
-            ui.text(dl, "Ragebot takes priority when it is enabled.", s.text_dim, 0.9);
-            ui.text(dl, "Writes require Allow writes in Config.", s.text_dim, 0.9);
-            ui.text(dl, "Triggerbot and recoil control are not wired yet.", s.text_dim, 0.9);
+            ui.multicombo(dl, "hitboxes##legit", &mut wg.hitboxes, &LEGIT_HITBOXES, s);
+            ui.checkbox(dl, "triggerbot", &mut wg.triggerbot, s);
+            if wg.triggerbot {
+                ui.slider_i32(dl, "delay", &mut wg.trigger_delay, 0, 250, " ms", s);
+                ui.slider_i32(dl, "hitchance", &mut wg.trigger_hitchance, 0, 100, "%", s);
+            }
+            ui.checkbox(dl, "autowall", &mut wg.autowall, s);
+            if wg.autowall {
+                ui.slider_i32(dl, "minimum damage", &mut wg.min_damage, 1, 100, "", s);
+            }
+            ui.checkbox(dl, "autostop", &mut wg.autostop, s);
+            ui.checkbox(dl, "autoscope", &mut wg.autoscope, s);
         });
+        combat.legit.weapons = selected.min(5);
     }
 
     #[allow(dead_code)]
@@ -2531,10 +3343,6 @@ impl Menu {
                         ];
                     }
                     ui.separator(dl, s);
-                    let mut allow = state.settings().misc.allow_writes;
-                    if ui.checkbox(dl, "allow writes", &mut allow, s) {
-                        state.settings_mut().misc.allow_writes = allow;
-                    }
                 });
 
                 self.ui.child(dl, right_x, y, col_w, h, true, s, |ui, dl| {

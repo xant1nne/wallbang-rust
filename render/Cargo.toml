@@ -12,4 +12,5 @@ gltf = { workspace = true }
 image = { workspace = true }
 parking_lot = { workspace = true }
 serde_json = { workspace = true }
+serde = { workspace = true }
 windows = { workspace = true }

@@ -11,16 +11,25 @@
 // The guard is kept with the override so a later "allow writes = off" cannot
 // prevent restoration.
 use parking_lot::Mutex;
+use std::sync::OnceLock;
+use wallbang_config::collections::HashMap;
 use wallbang_core::memory;
 use wallbang_core::modules;
 use wallbang_core::mutation::{self, MutationGuard};
 
-const ICVAR_ARRAY: usize = 0x40;
-const ICVAR_COUNT: usize = 0x58;
+// Layout verified offline on build 14201 tier0.dll (CCvar::GetNextCvarIterator):
+//   VEngineCvar007 is exported by tier0.dll (not engine2.dll).
+//   ICvar + 0x4A -> u16 capacity/count (low 15 bits)
+//   ICvar + 0x50 -> CUtlLinkedList element array (stride 16 bytes, ConVar* at +0)
+//   ConVar + 0x00 -> name string, + 0x28 -> type, + 0x30 -> flags
+//   ConVar + 0x58 -> typed values[]
+const ICVAR_COUNT: usize = 0x4A;
+const ICVAR_ARRAY: usize = 0x50;
+const ICVAR_STRIDE: usize = 16;
 const CVAR_NAME: usize = 0x00;
 const CVAR_TYPE: usize = 0x28;
 const CVAR_VALUES: usize = 0x58;
-const MAX_CVARS: usize = 65_536;
+const MAX_CVARS: usize = 32_767;
 const MAX_NAME: usize = 128;
 
 const TYPE_BOOL: i16 = 0;
@@ -52,14 +61,21 @@ struct Override {
 
 static BACKEND: Mutex<Option<Backend>> = Mutex::new(None);
 static OVERRIDES: Mutex<Vec<Override>> = Mutex::new(Vec::new());
+/// Name lookup is O(number of engine cvars); the address is stable for the
+/// lifetime of the backend, so remember it instead of rescanning every frame.
+static ADDRESS_CACHE: OnceLock<Mutex<HashMap<String, Option<usize>>>> = OnceLock::new();
+
+fn address_cache() -> &'static Mutex<HashMap<String, Option<usize>>> {
+    ADDRESS_CACHE.get_or_init(|| Mutex::new(HashMap::default()))
+}
 
 /// Resolves ICvar and validates the cvar array. Returns the number of cvars
 /// exposed by the engine, or 0 when the layout does not match this build.
 pub fn init() -> usize {
-    let Some(icvar) = modules::create_interface("engine2.dll", "VEngineCvar007") else {
+    let Some(icvar) = modules::create_interface("tier0.dll", "VEngineCvar007") else {
         return 0;
     };
-    let (Some(base), Some(size)) = (modules::module_base("engine2.dll"), modules::module_size("engine2.dll")) else {
+    let (Some(base), Some(size)) = (modules::module_base("tier0.dll"), modules::module_size("tier0.dll")) else {
         return 0;
     };
     let Some(vtable) = (unsafe { memory::read_ptr(icvar) }) else {
@@ -68,18 +84,20 @@ pub fn init() -> usize {
     if vtable < base || vtable >= base.saturating_add(size) {
         return 0;
     }
-    let (Some(array), Some(count)) = (
+    let (Some(array), Some(raw_count)) = (
         unsafe { memory::read_ptr(icvar + ICVAR_ARRAY) },
-        unsafe { memory::read::<u32>(icvar + ICVAR_COUNT) },
+        unsafe { memory::read::<u16>(icvar + ICVAR_COUNT) },
     ) else {
         return 0;
     };
-    let count = count as usize;
-    if count == 0 || count > MAX_CVARS || !unsafe { memory::validate_range(array, count * 8) } {
+    let count = (raw_count & 0x7FFF) as usize;
+    if count == 0 || count > MAX_CVARS || !unsafe { memory::validate_range(array, count * ICVAR_STRIDE) } {
         return 0;
     }
     let mut backend = BACKEND.lock();
     *backend = Some(Backend { array, count });
+    drop(backend);
+    address_cache().lock().clear();
     count
 }
 
@@ -95,27 +113,43 @@ pub fn active_overrides() -> usize {
 pub fn shutdown() {
     restore_all();
     *BACKEND.lock() = None;
+    address_cache().lock().clear();
 }
 
 /// Finds a cvar by name (case-insensitive, as the engine console does).
 pub fn find(name: &str) -> Option<usize> {
-    let backend = BACKEND.lock();
-    let backend = backend.as_ref()?;
-    for index in 0..backend.count {
-        let address = unsafe { memory::read_unchecked::<usize>(backend.array + index * 8)? };
-        if address == 0 || !unsafe { memory::validate_range(address, CVAR_VALUES + 8) } {
-            continue;
-        }
-        let name_ptr = unsafe { memory::read_unchecked::<usize>(address + CVAR_NAME)? };
-        if name_ptr == 0 || !unsafe { memory::validate_range(name_ptr, MAX_NAME) } {
-            continue;
-        }
-        let candidate = unsafe { memory::read_cstr_unchecked(name_ptr, MAX_NAME)? };
-        if candidate.eq_ignore_ascii_case(name) {
-            return Some(address);
-        }
+    if let Some(hit) = address_cache().lock().get(name).copied() {
+        return hit;
     }
-    None
+    let found = {
+        let backend = BACKEND.lock();
+        let backend = backend.as_ref()?;
+        let mut found = None;
+        for index in 0..backend.count {
+            let Some(address) = (unsafe { memory::read_unchecked::<usize>(backend.array + index * ICVAR_STRIDE) }) else {
+                continue;
+            };
+            if !memory::is_plausible_ptr(address) || !unsafe { memory::validate_range(address, CVAR_VALUES + 8) } {
+                continue;
+            }
+            let Some(name_ptr) = (unsafe { memory::read_unchecked::<usize>(address + CVAR_NAME) }) else {
+                continue;
+            };
+            if !memory::is_plausible_ptr(name_ptr) || !unsafe { memory::validate_range(name_ptr, MAX_NAME) } {
+                continue;
+            }
+            let Some(candidate) = (unsafe { memory::read_cstr_unchecked(name_ptr, MAX_NAME) }) else {
+                continue;
+            };
+            if candidate.eq_ignore_ascii_case(name) {
+                found = Some(address);
+                break;
+            }
+        }
+        found
+    };
+    address_cache().lock().insert(name.to_owned(), found);
+    found
 }
 
 /// Reads the current numeric value without writing anything.

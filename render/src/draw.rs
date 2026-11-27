@@ -1,6 +1,6 @@
 // Config block: сглаженный TrueType-атлас из crate::font; MAX_VERTICES из dx11.
 use crate::dx11::MAX_VERTICES;
-use crate::font::{self, CHAR_COUNT, FIRST_CHAR, LAST_CHAR};
+use crate::font::{self, CHAR_COUNT};
 
 pub type Color = [u8; 4];
 
@@ -26,8 +26,10 @@ struct ClipRect {
 }
 
 pub struct DrawList {
+    icons: Vec<crate::skin_icons::IconRequest>,
     vertices: Vec<Vertex>,
     top_vertices: Vec<Vertex>,
+    overlay_vertices: Vec<Vertex>,
     top_depth: usize,
     clip_stack: Vec<ClipRect>,
     alpha_stack: Vec<f32>,
@@ -35,14 +37,17 @@ pub struct DrawList {
     height: f32,
     white_u: f32,
     white_v: f32,
+    top_start: usize,
 }
 
 impl DrawList {
     pub fn new() -> Self {
         let atlas = font::get();
         Self {
+            icons: Vec::with_capacity(24),
             vertices: Vec::with_capacity(16_384),
             top_vertices: Vec::with_capacity(4_096),
+            overlay_vertices: Vec::with_capacity(2_048),
             top_depth: 0,
             clip_stack: Vec::with_capacity(8),
             alpha_stack: Vec::with_capacity(4),
@@ -50,16 +55,20 @@ impl DrawList {
             height: 1080.0,
             white_u: atlas.white_u,
             white_v: atlas.white_v,
+            top_start: usize::MAX,
         }
     }
 
     #[inline]
     pub fn begin(&mut self, width: f32, height: f32) {
+        self.icons.clear();
         self.width = width.max(1.0);
         self.height = height.max(1.0);
         self.vertices.clear();
         self.top_vertices.clear();
+        self.overlay_vertices.clear();
         self.top_depth = 0;
+        self.top_start = usize::MAX;
         self.clip_stack.clear();
         self.alpha_stack.clear();
     }
@@ -69,6 +78,11 @@ impl DrawList {
         self.top_depth = self.top_depth.saturating_add(1);
     }
 
+    pub fn inventory_icon(&mut self,definition:i16,paint:u32,rect:(f32,f32,f32,f32)) {
+        self.icons.push(crate::skin_icons::IconRequest {definition,paint,rect});
+    }
+    pub fn inventory_icons(&self)->&[crate::skin_icons::IconRequest] { &self.icons }
+
     #[inline]
     pub fn end_top(&mut self) {
         self.top_depth = self.top_depth.saturating_sub(1);
@@ -77,10 +91,18 @@ impl DrawList {
     #[inline]
     pub fn flush_top(&mut self) {
         if !self.top_vertices.is_empty() {
+            self.top_start = self.top_start.min(self.vertices.len());
             let avail = MAX_VERTICES.saturating_sub(self.vertices.len());
             let count = self.top_vertices.len().min(avail);
             self.vertices.extend_from_slice(&self.top_vertices[..count]);
             self.top_vertices.clear();
+        }
+        if !self.overlay_vertices.is_empty() {
+            self.top_start = self.top_start.min(self.vertices.len());
+            let avail = MAX_VERTICES.saturating_sub(self.vertices.len());
+            let count = self.overlay_vertices.len().min(avail);
+            self.vertices.extend_from_slice(&self.overlay_vertices[..count]);
+            self.overlay_vertices.clear();
         }
         self.top_depth = 0;
     }
@@ -136,6 +158,10 @@ impl DrawList {
         &self.vertices
     }
 
+    pub fn flushed_top_vertices(&self) -> &[Vertex] {
+        self.vertices.get(self.top_start..).unwrap_or(&[])
+    }
+
     #[inline]
     pub fn size(&self) -> (f32, f32) {
         (self.width, self.height)
@@ -155,7 +181,9 @@ impl DrawList {
     fn push(&mut self, x: f32, y: f32, u: f32, v: f32, c: Color) {
         let c = self.apply_alpha(c);
         let (nx, ny) = self.ndc(x, y);
-        let target = if self.top_depth > 0 {
+        let target = if self.top_depth >= 2 {
+            &mut self.overlay_vertices
+        } else if self.top_depth == 1 {
             &mut self.top_vertices
         } else {
             &mut self.vertices
@@ -254,6 +282,42 @@ impl DrawList {
     #[inline]
     pub fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, c: Color) {
         self.textured_quad(x, y, w, h, c, self.white_u, self.white_v, self.white_u, self.white_v);
+    }
+
+    /// Four-corner interpolated rectangle (for SV square, hue/alpha/wear bars).
+    pub fn rect_multicolor(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        tl: Color,
+        tr: Color,
+        br: Color,
+        bl: Color,
+    ) {
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let (mut x0, mut y0, mut x1, mut y1) = (x, y, x + w, y + h);
+        if self.top_depth == 0 {
+            if let Some(clip) = self.clip_stack.last() {
+                x0 = x0.max(clip.x0);
+                y0 = y0.max(clip.y0);
+                x1 = x1.min(clip.x1);
+                y1 = y1.min(clip.y1);
+                if x1 <= x0 || y1 <= y0 {
+                    return;
+                }
+            }
+        }
+        let (u, v) = (self.white_u, self.white_v);
+        self.push(x0, y0, u, v, tl);
+        self.push(x1, y0, u, v, tr);
+        self.push(x0, y1, u, v, bl);
+        self.push(x1, y0, u, v, tr);
+        self.push(x1, y1, u, v, br);
+        self.push(x0, y1, u, v, bl);
     }
 
     pub fn rect_rounded(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, c: Color) {
@@ -468,12 +532,8 @@ impl DrawList {
         let atlas = font::get();
         let table = if brand { &atlas.brand_glyphs } else { &atlas.ui_glyphs };
         let mut total = 0.0f32;
-        for byte in text.bytes() {
-            let idx = if (FIRST_CHAR..=LAST_CHAR).contains(&byte) {
-                (byte - FIRST_CHAR) as usize
-            } else {
-                (b'?' - FIRST_CHAR) as usize
-            };
+        for ch in text.chars() {
+            let idx = font::glyph_index(ch);
             if idx < CHAR_COUNT {
                 total += table[idx].advance * scale;
             }
@@ -522,17 +582,13 @@ impl DrawList {
         let table = if brand { &atlas.brand_glyphs } else { &atlas.ui_glyphs };
         let mut pen_x = x.floor();
         let py = y.floor();
-        for byte in text.bytes() {
-            let idx = if (FIRST_CHAR..=LAST_CHAR).contains(&byte) {
-                (byte - FIRST_CHAR) as usize
-            } else {
-                (b'?' - FIRST_CHAR) as usize
-            };
+        for ch in text.chars() {
+            let idx = font::glyph_index(ch);
             if idx >= CHAR_COUNT {
                 continue;
             }
             let g = table[idx];
-            if byte != b' ' && g.w > 0.0 && g.h > 0.0 {
+            if ch != ' ' && g.w > 0.0 && g.h > 0.0 {
                 self.textured_quad(
                     pen_x,
                     py,
@@ -551,6 +607,31 @@ impl DrawList {
 
     pub fn text(&mut self, x: f32, y: f32, text: &str, c: Color, scale: f32) {
         self.draw_text_impl(x, y, text, c, scale, false);
+    }
+
+    /// Shared preview stage, drawn below the transparent owned model texture.
+    pub fn studio_stage(&mut self, rect: (f32, f32, f32, f32), accent: Color) {
+        let (x,y,w,h) = rect;
+        self.push_clip(x,y,w,h);
+        self.rect_rounded(x,y,w,h,4.0,[12,14,18,255]);
+        let cx = x+w*0.5;
+        let floor = y+h*0.91;
+        for layer in (1..=12).rev() {
+            let r = layer as f32 / 12.0;
+            let points: Vec<_> = (0..48).map(|i| {
+                let a = i as f32 / 48.0 * std::f32::consts::TAU;
+                (cx+a.cos()*w*0.46*r, floor+a.sin()*h*0.045*r)
+            }).collect();
+            self.convex_poly(&points,[accent[0],accent[1],accent[2],3]);
+        }
+        for i in -2..=2 {
+            let bx = cx+i as f32*w*0.24;
+            self.line(cx+i as f32*w*0.07,y+h*0.67,bx,y+h,1.0,[36,40,48,100]);
+        }
+        for t in [0.72,0.79,0.88,0.98] { self.line(x,y+h*t,x+w,y+h*t,1.0,[36,40,48,110]); }
+        self.rect(cx-18.0,y+h-3.0,36.0,1.0,accent);
+        self.pop_clip();
+        self.outline_rounded(x,y,w,h,4.0,1.0,[36,40,48,255]);
     }
 
     pub fn text_brand(&mut self, x: f32, y: f32, text: &str, c: Color, scale: f32) {

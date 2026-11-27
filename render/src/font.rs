@@ -8,13 +8,31 @@ use windows::core::PCWSTR;
 use windows::Win32::Graphics::Gdi::*;
 
 pub const ATLAS_W: usize = 2048;
-pub const ATLAS_H: usize = 256;
+pub const ATLAS_H: usize = 512;
 
 const INTER_BOLD: &[u8] = include_bytes!("fonts/inter_bold.ttf");
 const RAJDHANI_SEMIBOLD: &[u8] = include_bytes!("fonts/rajdhani_semibold.ttf");
 pub const FIRST_CHAR: u8 = 0x20;
 pub const LAST_CHAR: u8 = 0x7E;
-pub const CHAR_COUNT: usize = (LAST_CHAR - FIRST_CHAR + 1) as usize;
+const ASCII_COUNT: usize = 95;
+const LATIN_COUNT: usize = 96;
+const CYRILLIC_COUNT: usize = 256;
+pub const CHAR_COUNT: usize = ASCII_COUNT + LATIN_COUNT + CYRILLIC_COUNT + 112;
+pub fn glyph_index(ch: char) -> usize {
+    match ch as u32 {
+        0x20..=0x7e => ch as usize - 0x20,
+        0xa0..=0xff => ASCII_COUNT + ch as usize - 0xa0,
+        0x400..=0x4ff => ASCII_COUNT + LATIN_COUNT + ch as usize - 0x400,
+        0x2000..=0x206f => ASCII_COUNT + LATIN_COUNT + CYRILLIC_COUNT + ch as usize - 0x2000,
+        _ => (b'?' - FIRST_CHAR) as usize,
+    }
+}
+fn glyph_code(index: usize) -> u16 {
+    if index < ASCII_COUNT { (0x20 + index) as u16 }
+    else if index < ASCII_COUNT + LATIN_COUNT { (0xa0 + index - ASCII_COUNT) as u16 }
+    else if index < ASCII_COUNT + LATIN_COUNT + CYRILLIC_COUNT { (0x400 + index - ASCII_COUNT - LATIN_COUNT) as u16 }
+    else { (0x2000 + index - ASCII_COUNT - LATIN_COUNT - CYRILLIC_COUNT) as u16 }
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GlyphInfo {
@@ -140,9 +158,8 @@ fn rasterize_face(
         let row_h = (line_h.ceil() as usize + 4).max(18);
         let bits = std::slice::from_raw_parts_mut(bits_ptr as *mut u8, (cell_w * cell_h * 4) as usize);
 
-        for code in FIRST_CHAR..=LAST_CHAR {
-            let idx = (code - FIRST_CHAR) as usize;
-            let ch_u16 = [code as u16];
+        for idx in 0..CHAR_COUNT {
+            let ch_u16 = [glyph_code(idx)];
             let mut sz = windows::Win32::Foundation::SIZE::default();
             let _ = GetTextExtentPoint32W(hdc, &ch_u16, &mut sz);
             let gw = (sz.cx.max(1) as usize).min(cell_w as usize - 2);
@@ -219,7 +236,7 @@ fn build_atlas() -> FontAtlas {
         let hdc = CreateCompatibleDC(None);
         let (ui_g, ui_h) = rasterize_face(hdc, &mut rgba, "Inter", 14, FW_BOLD.0 as i32, 8, 2);
         let (br_g, br_h) =
-            rasterize_face(hdc, &mut rgba, "Rajdhani", 20, FW_SEMIBOLD.0 as i32, 8, 128);
+            rasterize_face(hdc, &mut rgba, "Rajdhani", 20, FW_SEMIBOLD.0 as i32, 8, 256);
         let _ = DeleteDC(hdc);
         (ui_g, ui_h, br_g, br_h)
     };
@@ -234,5 +251,25 @@ fn build_atlas() -> FontAtlas {
         ui_line_h,
         brand_glyphs,
         brand_line_h,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn cyrillic_and_ukrainian_glyphs_are_rasterized() {
+        let atlas = get();
+        for ch in "Название трека ЖёЇїЄєҐґ".chars().filter(|c| *c != ' ') {
+            let index = glyph_index(ch);
+            assert_ne!(index, glyph_index('?'));
+            let glyph = atlas.ui_glyphs[index];
+            assert!(glyph.advance > 0.0);
+            let x = (glyph.u0 * atlas.width as f32) as usize;
+            let y = (glyph.v0 * atlas.height as f32) as usize;
+            let ink = (0..glyph.h as usize).any(|dy| (0..glyph.w as usize).any(|dx|
+                atlas.rgba[((y+dy)*atlas.width+x+dx)*4+3] > 0));
+            assert!(ink, "empty glyph {ch}");
+        }
     }
 }

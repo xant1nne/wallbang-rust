@@ -7,11 +7,11 @@ use crate::{
     pawn::{sanitize_player_name, Pawn, WeaponFields},
 };
 use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use std::collections::HashMap;
+use wallbang_config::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use wallbang_config::{offsets::{self, DW_VIEW_MATRIX}, Settings};
+use wallbang_config::{offsets::{self, CONTROLLER_PING, DW_VIEW_MATRIX, OBSERVER_TARGET, PAWN_OBSERVER_SERVICES}, Settings};
 
 /// How long a resolved player name is reused before the controller is re-read.
 /// Names only change on a reconnect, so this is a cold path.
@@ -33,6 +33,19 @@ static BUILD_WARNED: AtomicBool = AtomicBool::new(false);
 /// "external" in the first playtest).
 static VIEWPORT_W: AtomicU32 = AtomicU32::new(0);
 static VIEWPORT_H: AtomicU32 = AtomicU32::new(0);
+static MOVEMENT_ACTIVITY: AtomicU32 = AtomicU32::new(0);
+
+pub fn set_movement_activity(bhop: bool, edgejump: bool, jumpbug: bool) {
+    MOVEMENT_ACTIVITY.store(
+        (bhop as u32) | ((edgejump as u32) << 1) | ((jumpbug as u32) << 2),
+        Ordering::Relaxed,
+    );
+}
+
+pub fn movement_activity() -> (bool, bool, bool) {
+    let bits = MOVEMENT_ACTIVITY.load(Ordering::Relaxed);
+    (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0)
+}
 
 /// Called from `render::hooks` once the swapchain size is known.
 pub fn set_viewport(width: u32, height: u32) {
@@ -123,6 +136,10 @@ pub struct Snapshot {
     pub local_address: usize,
     pub local_team: i32,
     pub local_origin: Vec3,
+    pub local_velocity: Vec3,
+    pub local_name: Option<Arc<str>>,
+    pub local_ping: u32,
+    pub spectators: Vec<Arc<str>>,
     pub view_matrix: Mat4,
     pub screen_w: f32,
     pub screen_h: f32,
@@ -147,7 +164,7 @@ impl GameState {
         Self {
             settings: RwLock::new(Settings::default()),
             snapshot: RwLock::new(Snapshot::default()),
-            names: Mutex::new(HashMap::new()),
+            names: Mutex::new(HashMap::default()),
         }
     }
 
@@ -239,13 +256,14 @@ impl GameState {
         // and the C4 inventory walk cost validation syscalls per player, so they
         // only run when the overlay actually needs them (that gating is part of
         // the refresh budget: an unfiltered refresh hit 45 ms in the playtest).
-        let (want_name, want_weapon_name, want_money, want_armor, want_bomb) = {
+        let (want_name, want_local_name, want_weapon_name, want_money, want_armor, want_bomb) = {
             use wallbang_config::settings::{esp_bits, has_flag};
             let settings = self.settings();
             let esp = &settings.esp;
             let flags = esp.enemies.flags_type | esp.teammates.flags_type;
             (
                 esp.enemies.name || esp.teammates.name,
+                settings.misc.watermark || settings.visual.hud.spectators || settings.ui.spectator_list,
                 esp.enemies.weapon || esp.teammates.weapon,
                 esp.enabled && has_flag(flags, esp_bits::FLAG_CASH),
                 esp.enabled && has_flag(flags, esp_bits::FLAG_ARMOR),
@@ -254,7 +272,7 @@ impl GameState {
         };
 
         unsafe {
-            if let Some(matrix) = crate::memory::read::<Mat4>(client + DW_VIEW_MATRIX) {
+            if let Some(matrix) = crate::memory::read_unchecked::<Mat4>(client + DW_VIEW_MATRIX) {
                 snap.view_matrix = matrix;
             }
             let t = std::time::Instant::now();
@@ -263,6 +281,14 @@ impl GameState {
                     snap.local_address = local.address;
                     snap.local_team = fields.team;
                     snap.local_origin = fields.origin;
+                    snap.local_velocity = fields.velocity;
+                    if want_local_name {
+                        snap.local_name = self.resolve_name(local.address);
+                    }
+                    if let Some(controller) = Pawn::local_controller() {
+                        snap.local_ping = crate::memory::read_unchecked::<u32>(controller + CONTROLLER_PING)
+                            .unwrap_or(0);
+                    }
                 }
             }
             PROF_LOCAL_US.fetch_add(t.elapsed().as_micros() as u64, Ordering::Relaxed);
@@ -275,6 +301,21 @@ impl GameState {
                 let Some(fields) = Pawn::new(instance).fields() else {
                     continue;
                 };
+                if want_local_name && instance != snap.local_address {
+                    let observer = crate::memory::read_ptr_unchecked(instance + PAWN_OBSERVER_SERVICES)
+                        .unwrap_or(0);
+                    if observer != 0 {
+                        let target = crate::memory::read_unchecked::<u32>(observer + OBSERVER_TARGET)
+                            .unwrap_or(u32::MAX);
+                        if target != u32::MAX
+                            && EntityList::slot((target & 0x7FFF) as usize) == Some(snap.local_address)
+                        {
+                            if let Some(name) = self.resolve_name(instance) {
+                                snap.spectators.push(name);
+                            }
+                        }
+                    }
+                }
                 if fields.health <= 0 || fields.life_state != 0 {
                     continue;
                 }

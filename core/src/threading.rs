@@ -32,6 +32,7 @@ pub struct ThreadHandle {
 }
 
 impl ThreadHandle {
+    pub fn started(&self) -> bool { self.handle != 0 }
     pub fn join(mut self) {
         let handle = std::mem::replace(&mut self.handle, 0) as *mut c_void;
         if !handle.is_null() {
@@ -68,5 +69,54 @@ where
     }
     ThreadHandle {
         handle: handle as usize,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use parking_lot::{Mutex, ReentrantMutex, RwLock};
+    use std::cell::RefCell;
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn native_threads_contend_and_reenter_without_compiler_tls_keys() {
+        const WORKERS: usize = 6;
+        const ITERATIONS: usize = 400;
+        let rw = Arc::new(RwLock::new(0usize));
+        let mutex = Arc::new(Mutex::new(0usize));
+        let recursive = Arc::new(ReentrantMutex::new(RefCell::new(0usize)));
+        let barrier = Arc::new(Barrier::new(WORKERS + 1));
+        let write_guard = rw.write();
+        let mut threads = Vec::new();
+        for _ in 0..WORKERS {
+            let rw = rw.clone();
+            let mutex = mutex.clone();
+            let recursive = recursive.clone();
+            let barrier = barrier.clone();
+            threads.push(spawn(move || {
+                barrier.wait();
+                // The main thread holds the writer: every native worker must
+                // enter the patched shared-lock slow path before it can proceed.
+                let _ = *rw.read();
+                for _ in 0..ITERATIONS {
+                    *rw.write() += 1;
+                    *mutex.lock() += 1;
+                    let outer = recursive.lock();
+                    let inner = recursive.lock();
+                    *inner.borrow_mut() += 1;
+                    drop(inner);
+                    drop(outer);
+                }
+            }));
+        }
+        barrier.wait();
+        // Give the OS workers time to enqueue; this is a test-only forced wait.
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        drop(write_guard);
+        for thread in threads { thread.join(); }
+        assert_eq!(*rw.read(), WORKERS * ITERATIONS);
+        assert_eq!(*mutex.lock(), WORKERS * ITERATIONS);
+        assert_eq!(*recursive.lock().borrow(), WORKERS * ITERATIONS);
     }
 }

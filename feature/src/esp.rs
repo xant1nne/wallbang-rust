@@ -102,7 +102,11 @@ fn draw_targets(dl: &mut DrawList, state: &GameState, cfg: &EspPlayerSettings, t
         let target = EspTargetView {
             box_min,
             box_max,
-            bones: project_bones(player, &matrix, screen_w, screen_h),
+            bones: if cfg.skeleton {
+                project_bones(player, &matrix, screen_w, screen_h)
+            } else {
+                [None; BONE_SLOTS]
+            },
             name: player.name.as_deref(),
             health: player.health,
             animated_health: health_anim[slot],
@@ -121,6 +125,7 @@ fn draw_targets(dl: &mut DrawList, state: &GameState, cfg: &EspPlayerSettings, t
 }
 
 pub fn draw_esp(dl: &mut DrawList, state: &GameState) {
+    wallbang_render::weather::draw(dl, state);
     let esp = state.settings().esp.clone();
     if esp.enabled {
         draw_targets(dl, state, &esp.enemies, false);

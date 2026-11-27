@@ -1,11 +1,12 @@
 // Config block: own skinned agent renderer. GLB is parsed offline into CPU data once,
 // GPU resources are created once per D3D11 device; no runtime D3DCompile, no game reads.
 use parking_lot::Mutex;
-use std::collections::HashMap;
+use wallbang_config::collections::HashMap;
 use std::ffi::c_void;
 use windows::Win32::Graphics::Direct3D::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
+pub mod inspect;
 
 const VS_BYTECODE: &[u8] = include_bytes!("shaders/model_vs.cso");
 const PS_BYTECODE: &[u8] = include_bytes!("shaders/model_ps.cso");
@@ -239,6 +240,8 @@ struct Primitive {
     index_offset: u32,
     index_count: u32,
     texture: usize,
+    paintable: bool,
+    alpha: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -469,13 +472,15 @@ fn parse_agent(glb: &[u8]) -> Result<AgentData, String> {
                 index_offset,
                 index_count: (indices.len() as u32) - index_offset,
                 texture: texture.min(textures.len() - 1),
+                paintable: false,
+                alpha: false,
             });
         }
     }
 
     let mut joints = Vec::new();
     let mut inverse_bind = Vec::new();
-    let mut bone_slots = HashMap::new();
+    let mut bone_slots = HashMap::default();
     if let Some(skin) = document.skins().next() {
         if let Some(matrices) = skin.reader(get.clone()).read_inverse_bind_matrices() {
             for matrix in matrices {
@@ -776,12 +781,57 @@ impl AgentData {
             locals[track.node] = local;
         }
 
+        if !USE_ANIMATION {
+            self.apply_idle_pose(&mut locals, time);
+        }
+
         let mut globals = vec![Mat4::identity(); n];
         let mut done = vec![false; n];
         for i in 0..n {
             Self::compute_global(i, &self.skeleton.nodes, &locals, &mut globals, &mut done);
         }
         globals
+    }
+
+    fn apply_idle_pose(&self, locals: &mut [Mat4], time: f32) {
+        let euler_quat = |rx: f32, ry: f32, rz: f32| -> [f32; 4] {
+            let (sx, cx) = (rx * 0.5).sin_cos();
+            let (sy, cy) = (ry * 0.5).sin_cos();
+            let (sz, cz) = (rz * 0.5).sin_cos();
+            [
+                sx * cy * cz - cx * sy * sz,
+                cx * sy * cz + sx * cy * sz,
+                cx * cy * sz - sx * sy * cz,
+                cx * cy * cz + sx * sy * sz,
+            ]
+        };
+        let quat_mul = |a: [f32; 4], b: [f32; 4]| -> [f32; 4] {
+            [
+                a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+                a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+                a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+                a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+            ]
+        };
+        let mut rot_bone = |name: &str, rx: f32, ry: f32, rz: f32| {
+            let Some(&slot) = self.skeleton.bone_slots.get(name) else { return };
+            let Some(&node_idx) = self.skeleton.joints.get(slot) else { return };
+            let Some(node) = self.skeleton.nodes.get(node_idx) else { return };
+            let delta = euler_quat(rx, ry, rz);
+            let q = quat_mul(node.rotation, delta);
+            locals[node_idx] = Mat4::trs(node.translation, q, node.scale);
+        };
+
+        let breath = (time * 1.6).sin();
+        let sway = (time * 0.85).sin();
+        rot_bone("spine_1", breath * 0.02, 0.0, 0.0);
+        rot_bone("spine_2", breath * 0.025, sway * 0.015, 0.0);
+        rot_bone("head_0", -breath * 0.015, -0.06 + sway * 0.03, 0.0);
+        // Relaxed combat idle stance: lower both arms symmetrically and bend elbows slightly forward
+        rot_bone("arm_upper_L", 0.12, -0.15, 0.72);
+        rot_bone("arm_upper_R", 0.12, 0.15, 0.72);
+        rot_bone("arm_lower_L", 0.0, -0.28, 0.10);
+        rot_bone("arm_lower_R", 0.0, 0.28, 0.10);
     }
 
     fn compute_global(
@@ -1022,6 +1072,9 @@ unsafe fn create_texture_srv(
 
 impl ModelRenderer {
     pub unsafe fn new(device: &ID3D11Device) -> Option<Self> {
+        Self::new_pipeline(device, true)
+    }
+    unsafe fn new_pipeline(device: &ID3D11Device, load_agents: bool) -> Option<Self> {
         let mut vs = None;
         device.CreateVertexShader(VS_BYTECODE, None, Some(&mut vs)).ok()?;
         let mut ps = None;
@@ -1186,22 +1239,22 @@ impl ModelRenderer {
             .ok()?;
         let white = create_texture_srv(device, &[190, 180, 160, 255], 1, 1)?;
 
-        let phoenix = match parse_agent(PHOENIX_GLB) {
+        let phoenix = if load_agents { match parse_agent(PHOENIX_GLB) {
             Ok(data) => Self::upload(device, data),
             Err(error) => {
                 crate::trace(&format!("model: tm_phoenix parse failed: {error}"));
                 None
             }
-        };
-        let sas = match parse_agent(SAS_GLB) {
+        }} else { None };
+        let sas = if load_agents { match parse_agent(SAS_GLB) {
             Ok(data) => Self::upload(device, data),
             Err(error) => {
                 crate::trace(&format!("model: ctm_sas parse failed: {error}"));
                 None
             }
-        };
+        }} else { None };
         let ok = phoenix.is_some() && sas.is_some();
-        *RESULT.lock() = ok;
+        if load_agents { *RESULT.lock() = ok; }
         if ok {
             crate::trace("model: own agents ready tm_phoenix/ctm_sas");
         }
@@ -1330,7 +1383,7 @@ impl ModelRenderer {
         enemy: bool,
         material: MaterialOverride,
     ) -> Option<ID3D11ShaderResourceView> {
-        let ss = 1.5f32;
+        let ss = 2.0f32;
         let w = (rect.2 * ss).max(64.0) as u32;
         let h = (rect.3 * ss).max(96.0) as u32;
         if self.ensure_target(context, w, h).is_none() {
@@ -1343,7 +1396,7 @@ impl ModelRenderer {
         let (eye, focus) = agent.data.camera(aspect);
         let view = Mat4::look_at(eye, focus);
         let view_proj = Mat4::mul(proj, view);
-        let anim_key = if USE_ANIMATION { (clock * 12.0) as u32 } else { 0 };
+        let anim_key = if USE_ANIMATION { (clock * 20.0) as u32 } else { 0 };
         let material_key = if material.enabled {
             (material.material as u32, material.packed_color())
         } else {
@@ -1383,7 +1436,7 @@ impl ModelRenderer {
         let scene = SceneBuffer {
             view_proj: view_proj.0,
             world: agent.data.skeleton.world.0,
-            light: [0.42, 0.78, -0.48, 0.0],
+            light: [0.46, 0.72, 0.52, 0.0],
             camera: [eye[0], eye[1], eye[2], 1.0],
             tint,
         };
@@ -1400,7 +1453,7 @@ impl ModelRenderer {
         context.RSSetViewports(Some(&[clear]));
         let targets = [Some(target.rtv.clone())];
         context.OMSetRenderTargets(Some(&targets), Some(&target.dsv));
-        context.ClearRenderTargetView(&target.rtv, &[0.035, 0.04, 0.05, 1.0]);
+        context.ClearRenderTargetView(&target.rtv, &[0.0, 0.0, 0.0, 0.0]);
         context.ClearDepthStencilView(&target.dsv, D3D11_CLEAR_DEPTH.0, 1.0, 0);
         if material.enabled && material.ignore_z() {
             context.OMSetDepthStencilState(&self.depth_ignore_z, 0);

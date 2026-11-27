@@ -5,11 +5,12 @@ name = "wallbang_loader"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+autobins = false
 
 # The GUI loader is the only binary. The DLL is always embedded into it at build
-# time (build.bat builds the DLL first); there is no on-disk DLL variant anymore.
+# time (build.bat builds the DLL first).
 [[bin]]
-name = "wallbang_gui"
+name = "wallbang_loader"
 path = "src/bin/wallbang_gui.rs"
 
 [dependencies]

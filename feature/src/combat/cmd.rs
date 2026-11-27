@@ -8,7 +8,7 @@ const LEGIT_MIN_STEP: f32 = 0.02;
 
 /// Вызывается из detour'а CCSGOInput::CreateMove (игровой поток).
 pub fn on_create_move(cmd: UserCmd, state: &GameState) {
-    if cmd.base() == 0 || !mutation::is_allowed() {
+    if cmd.base() == 0 || !state.settings().misc.allow_writes || !mutation::is_allowed() {
         return;
     }
     let Some(_guard) = mutation::acquire() else {

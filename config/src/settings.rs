@@ -90,7 +90,7 @@ impl Default for GrenadeSettings {
 
 /// Ambience controls. Values are stored even when the engine backend is not
 /// active, so switching to an available backend never loses a user's setup.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AmbienceSettings {
     pub skybox: bool,
@@ -118,12 +118,18 @@ pub struct AmbienceSettings {
     /// Engine-side `fog_override_end` used when `fog` is on.
     pub fog_end: f32,
     pub weather_on: bool,
-    /// 0 snow, 1 rain, 2 stars (matches the Visuals combo). Only rain has a
-    /// confirmed engine cvar backend; the other two stay UI-only and inactive.
+    /// 0 snow, 1 rain, 2 stars; rendered in world space by our particle renderer.
     pub weather: usize,
     pub weather_color: Rgba,
-    /// `r_RainParticleDensity` value; only used for the rain backend.
+    /// Particle density, mapped to a bounded local particle budget.
     pub weather_density: f32,
+    pub weather_speed: f32,
+    pub weather_wind: f32,
+    pub ambient_particles: bool,
+    /// 0 fireflies, 1 embers.
+    pub particle_style: usize,
+    pub particle_color: Rgba,
+    pub particle_density: f32,
     pub bloom: bool,
     pub bloom_strength: f32,
     pub gamma: bool,
@@ -162,6 +168,12 @@ impl Default for AmbienceSettings {
             weather: 0,
             weather_color: [220, 230, 245, 255],
             weather_density: 1000.0,
+            weather_speed: 1.0,
+            weather_wind: 0.3,
+            ambient_particles: false,
+            particle_style: 0,
+            particle_color: [255, 193, 105, 210],
+            particle_density: 120.0,
             bloom: false,
             bloom_strength: 0.5,
             gamma: false,
@@ -329,6 +341,9 @@ impl Default for VisualSettings {
 pub struct AppliedSkin {
     pub def_index: i16,
     pub paint_index: usize,
+    /// Actual Valve paint-kit ID, independent of UI catalog ordering.
+    pub paint_kit_id: u32,
+    pub custom_name: String,
     pub wear: f32,
     pub seed: i32,
     pub stattrak: bool,
@@ -339,6 +354,8 @@ impl Default for AppliedSkin {
         Self {
             def_index: 0,
             paint_index: 0,
+            paint_kit_id: 0,
+            custom_name: String::new(),
             wear: 0.01,
             seed: 0,
             stattrak: false,
@@ -360,6 +377,13 @@ pub struct StickerSlot {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SkinSettings {
+    pub enabled: bool,
+    /// Explicit Apply command; committed with settings, never saved to profiles.
+    #[serde(skip)]
+    pub apply_revision: u64,
+    pub selected_item: usize,
+    pub agent_enabled: bool,
+    pub agent_def_index: i16,
     pub applied: Vec<AppliedSkin>,
     pub stickers: Vec<StickerSlot>,
     pub charms: Vec<StickerSlot>,
@@ -368,12 +392,18 @@ pub struct SkinSettings {
     pub agent: String,
     pub agent_voice: String,
     pub inspect_yaw: f32,
+    pub inspect_pitch: f32,
     pub inspect_zoom: f32,
 }
 
 impl Default for SkinSettings {
     fn default() -> Self {
         Self {
+            enabled: false,
+            selected_item: 0,
+            apply_revision: 0,
+            agent_enabled: false,
+            agent_def_index: 0,
             applied: Vec::new(),
             stickers: vec![StickerSlot::default(); 5],
             charms: vec![StickerSlot::default(); 2],
@@ -382,14 +412,27 @@ impl Default for SkinSettings {
             agent: "tm_phoenix".to_owned(),
             agent_voice: "default".to_owned(),
             inspect_yaw: 0.0,
+            inspect_pitch: 0.0,
             inspect_zoom: 1.0,
         }
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MovementBind {
+    /// Zero is the Celerity empty binding (always active).
+    pub key: u16,
+    /// 0 always, 1 hold, 2 toggle.
+    pub mode: usize,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MovementSettings {
+    pub bhop_bind: MovementBind,
+    pub edgejump_bind: MovementBind,
+    pub jumpbug_bind: MovementBind,
     pub acceleration: f32,
     pub turn_boost: f32,
     pub obstacle_avoidance: bool,
@@ -408,6 +451,9 @@ pub struct MovementSettings {
 impl Default for MovementSettings {
     fn default() -> Self {
         Self {
+            bhop_bind: MovementBind::default(),
+            edgejump_bind: MovementBind::default(),
+            jumpbug_bind: MovementBind::default(),
             acceleration: 1.0,
             turn_boost: 1.0,
             obstacle_avoidance: false,
@@ -508,6 +554,8 @@ pub struct Settings {
     pub esp: EspSettings,
     pub misc: MiscSettings,
     pub visual: VisualSettings,
+    #[serde(default)]
+    pub postprocess: PostProcessSettings,
     pub skins: SkinSettings,
     /// Serialized mirror of the legacy C++ menu controls.
     pub ui: ExtendedUiState,
@@ -528,6 +576,7 @@ impl Default for Settings {
             esp: EspSettings::default(),
             misc: MiscSettings::default(),
             visual: VisualSettings::default(),
+            postprocess: PostProcessSettings::default(),
             skins: SkinSettings::default(),
             ui: ExtendedUiState::default(),
             active_profile: default_active_profile(),
@@ -536,6 +585,96 @@ impl Default for Settings {
 }
 
 /// Menu position, size, accent colour and open-state.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PostProcessSettings {
+    pub enabled: bool,
+    /// 0=Custom, 1=Competitive, 2=Vibrant, 3=Cinematic, 4=High Contrast, 5=Cold, 6=Warm, 7=Night Vision, 8=Desaturated
+    pub preset: usize,
+    pub exposure: f32,
+    pub contrast: f32,
+    pub saturation: f32,
+    pub vibrance: f32,
+    pub temperature: f32,
+    pub tint: f32,
+    pub gamma: f32,
+    pub nightmode: f32,
+    pub vignette: f32,
+    pub sharpen: f32,
+    pub world_tint: [u8; 4],
+    pub world_tint_strength: f32,
+}
+
+impl Default for PostProcessSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            preset: 0,
+            exposure: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            vibrance: 0.0,
+            temperature: 0.0,
+            tint: 0.0,
+            gamma: 1.0,
+            nightmode: 0.0,
+            vignette: 0.0,
+            sharpen: 0.0,
+            world_tint: [140, 175, 255, 255],
+            world_tint_strength: 0.0,
+        }
+    }
+}
+
+impl PostProcessSettings {
+    pub fn apply_preset(&mut self, preset: usize) {
+        self.preset = preset;
+        match preset {
+            1 => { // Competitive
+                self.exposure = 0.08; self.contrast = 1.12; self.saturation = 1.15;
+                self.vibrance = 0.35; self.temperature = 0.0; self.tint = 0.0;
+                self.gamma = 0.95; self.nightmode = 0.0; self.vignette = 0.0; self.sharpen = 0.55;
+            }
+            2 => { // Vibrant
+                self.exposure = 0.05; self.contrast = 1.10; self.saturation = 1.38;
+                self.vibrance = 0.55; self.temperature = 0.06; self.tint = 0.0;
+                self.gamma = 1.0; self.nightmode = 0.0; self.vignette = 0.08; self.sharpen = 0.30;
+            }
+            3 => { // Cinematic
+                self.exposure = -0.05; self.contrast = 1.22; self.saturation = 0.92;
+                self.vibrance = 0.20; self.temperature = -0.10; self.tint = 0.05;
+                self.gamma = 1.05; self.nightmode = 0.0; self.vignette = 0.35; self.sharpen = 0.25;
+            }
+            4 => { // High Contrast
+                self.exposure = 0.0; self.contrast = 1.38; self.saturation = 1.08;
+                self.vibrance = 0.15; self.temperature = 0.0; self.tint = 0.0;
+                self.gamma = 1.0; self.nightmode = 0.0; self.vignette = 0.12; self.sharpen = 0.40;
+            }
+            5 => { // Cold
+                self.exposure = 0.0; self.contrast = 1.08; self.saturation = 0.95;
+                self.vibrance = 0.15; self.temperature = -0.35; self.tint = -0.05;
+                self.gamma = 1.0; self.nightmode = 0.0; self.vignette = 0.15; self.sharpen = 0.20;
+            }
+            6 => { // Warm
+                self.exposure = 0.04; self.contrast = 1.06; self.saturation = 1.12;
+                self.vibrance = 0.25; self.temperature = 0.32; self.tint = 0.04;
+                self.gamma = 1.0; self.nightmode = 0.0; self.vignette = 0.12; self.sharpen = 0.20;
+            }
+            7 => { // Night Vision
+                self.exposure = 0.18; self.contrast = 1.25; self.saturation = 0.30;
+                self.vibrance = 0.0; self.temperature = -0.15; self.tint = -0.55;
+                self.gamma = 0.85; self.nightmode = 0.35; self.vignette = 0.45; self.sharpen = 0.50;
+            }
+            8 => { // Desaturated
+                self.exposure = 0.0; self.contrast = 1.18; self.saturation = 0.22;
+                self.vibrance = 0.0; self.temperature = -0.05; self.tint = 0.0;
+                self.gamma = 1.0; self.nightmode = 0.0; self.vignette = 0.20; self.sharpen = 0.30;
+            }
+            _ => {}
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MenuSettings {
@@ -548,6 +687,8 @@ pub struct MenuSettings {
     pub accent: [u8; 4],
     /// Virtual-key code of the menu toggle (VK_INSERT by default).
     pub toggle_key: u32,
+    /// Show developer/debug render controls when enabled.
+    pub developer: bool,
 }
 
 impl Default for MenuSettings {
@@ -560,6 +701,7 @@ impl Default for MenuSettings {
             h: DEFAULT_MENU_H,
             accent: [120, 180, 255, 255],
             toggle_key: 0x2D,
+            developer: false,
         }
     }
 }
@@ -1112,6 +1254,27 @@ impl Default for MotionBlurSettings {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClantagSettings {
+    pub enabled: bool,
+    /// 0=Fixed, 1=Typewriter, 2=Scroll, 3=Bounce, 4=Blink
+    pub style: usize,
+    pub step_ms: i32,
+    pub phrase: String,
+}
+
+impl Default for ClantagSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            style: 1,
+            step_ms: 450,
+            phrase: "WALLBANG".to_owned(),
+        }
+    }
+}
+
 /// Miscellaneous quality-of-life features.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -1121,10 +1284,12 @@ pub struct MiscSettings {
     pub reveal_radar: bool,
     pub bhop: bool,
     pub autostrafe: bool,
-    /// Разрешает запись в игру (движение/углы/кнопки). По умолчанию выключено.
+    /// Разрешает запись в игру (движение/углы/кнопки). По умолчанию включено.
     pub allow_writes: bool,
     pub hit_log: bool,
     pub miss_log: bool,
+    pub vote_revealer: bool,
+    pub clantag: ClantagSettings,
     pub motion_blur: MotionBlurSettings,
     /// UI language index. Only English resources are compiled at present.
     pub language: usize,
@@ -1141,9 +1306,11 @@ impl Default for MiscSettings {
             reveal_radar: false,
             bhop: false,
             autostrafe: false,
-            allow_writes: false,
+            allow_writes: true,
             hit_log: false,
             miss_log: false,
+            vote_revealer: false,
+            clantag: ClantagSettings::default(),
             motion_blur: MotionBlurSettings::default(),
             language: 0,
             movement: MovementSettings::default(),
@@ -1173,6 +1340,7 @@ mod tests {
             wear: 0.07,
             seed: 42,
             stattrak: true,
+            ..AppliedSkin::default()
         });
         settings.skins.stickers[0].sticker_id = 7;
         settings.misc.movement.edgejump = true;

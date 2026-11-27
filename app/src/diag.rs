@@ -159,8 +159,18 @@ unsafe extern "system" fn on_exception(pointers: *mut c_void) -> i32 {
                     .cast::<u64>()
                     .read_unaligned() as usize
             };
+            let register = |offset: usize| {
+                if pointers.context.is_null() {
+                    0
+                } else {
+                    (pointers.context as *const u8)
+                        .add(offset)
+                        .cast::<u64>()
+                        .read_unaligned() as usize
+                }
+            };
             let line = format!(
-                "[{secs}] EXCEPTION code=0x{:X} address=0x{:X} rip=0x{:X} rip_sym={} dll_base=0x{:X} flags=0x{:X} info0=0x{:X} stack: {} raw_stack: {} modules: {}\r\n",
+                "[{secs}] EXCEPTION code=0x{:X} address=0x{:X} rip=0x{:X} rip_sym={} dll_base=0x{:X} flags=0x{:X} info0=0x{:X} info1=0x{:X} rbx=0x{:X} rcx=0x{:X} rdx=0x{:X} stack: {} raw_stack: {} modules: {}\r\n",
                 record.code,
                 address,
                 rip,
@@ -168,6 +178,10 @@ unsafe extern "system" fn on_exception(pointers: *mut c_void) -> i32 {
                 base,
                 record.flags,
                 record.information.first().copied().unwrap_or(0),
+                record.information.get(1).copied().unwrap_or(0),
+                register(0x90),
+                register(0x80),
+                register(0x88),
                 stack_trace(),
                 raw_stack_trace(pointers.context),
                 module_bases()

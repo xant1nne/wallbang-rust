@@ -22,8 +22,27 @@ extern "system" {
 const SM_CXSCREEN: c_int = 0;
 const SM_CYSCREEN: c_int = 1;
 
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+
+static CLIENT_BASE: AtomicUsize = AtomicUsize::new(0);
+static CLIENT_SIZE: AtomicUsize = AtomicUsize::new(0);
+static ENGINE2_BASE: AtomicUsize = AtomicUsize::new(0);
+static ENGINE2_SIZE: AtomicUsize = AtomicUsize::new(0);
+static CACHED_BUILD: AtomicU32 = AtomicU32::new(0);
+
 #[inline]
 pub fn module_base(name: &str) -> Option<usize> {
+    let cache = match name {
+        "client.dll" => Some(&CLIENT_BASE),
+        "engine2.dll" => Some(&ENGINE2_BASE),
+        _ => None,
+    };
+    if let Some(slot) = cache {
+        let cached = slot.load(Ordering::Relaxed);
+        if cached != 0 {
+            return Some(cached);
+        }
+    }
     let mut buf = [0u8; 64];
     let bytes = name.as_bytes();
     if bytes.len() >= buf.len() {
@@ -34,13 +53,34 @@ pub fn module_base(name: &str) -> Option<usize> {
     if ptr.is_null() {
         None
     } else {
-        Some(ptr as usize)
+        let value = ptr as usize;
+        if let Some(slot) = cache {
+            slot.store(value, Ordering::Relaxed);
+        }
+        Some(value)
     }
+}
+
+pub fn export(module: &str, name: &std::ffi::CStr) -> Option<usize> {
+    let base = module_base(module)?;
+    let address = unsafe { GetProcAddress(base as *mut c_void, name.as_ptr()) } as usize;
+    (address != 0).then_some(address)
 }
 
 /// PE SizeOfImage загруженного модуля.
 #[inline]
 pub fn module_size(name: &str) -> Option<usize> {
+    let cache = match name {
+        "client.dll" => Some(&CLIENT_SIZE),
+        "engine2.dll" => Some(&ENGINE2_SIZE),
+        _ => None,
+    };
+    if let Some(slot) = cache {
+        let cached = slot.load(Ordering::Relaxed);
+        if cached != 0 {
+            return Some(cached);
+        }
+    }
     let base = module_base(name)?;
     unsafe {
         let e_lfanew = memory::read::<u32>(base + 0x3C)? as usize;
@@ -48,7 +88,11 @@ pub fn module_size(name: &str) -> Option<usize> {
         if size == 0 {
             None
         } else {
-            Some(size as usize)
+            let value = size as usize;
+            if let Some(slot) = cache {
+                slot.store(value, Ordering::Relaxed);
+            }
+            Some(value)
         }
     }
 }
@@ -79,8 +123,16 @@ pub fn create_interface(module: &str, name: &str) -> Option<usize> {
 
 #[inline]
 pub fn build_number() -> Option<u32> {
+    let cached = CACHED_BUILD.load(Ordering::Relaxed);
+    if cached != 0 {
+        return Some(cached);
+    }
     let base = module_base("engine2.dll")?;
-    unsafe { memory::read::<u32>(base + ENGINE_BUILD_NUMBER) }
+    let value = unsafe { memory::read::<u32>(base + ENGINE_BUILD_NUMBER) }?;
+    if value != 0 {
+        CACHED_BUILD.store(value, Ordering::Relaxed);
+    }
+    Some(value)
 }
 
 /// `Some(true)` — билд тот, под который сняты офсеты; `Some(false)` — билд
@@ -92,9 +144,30 @@ pub fn build_supported() -> Option<bool> {
 }
 
 #[inline]
+fn csgo_input_from_base(client: usize) -> usize {
+    client + DW_CSGO_INPUT
+}
+
+#[inline]
 pub fn csgo_input() -> Option<usize> {
     let client = module_base("client.dll")?;
-    unsafe { memory::read_ptr(client + DW_CSGO_INPUT) }
+    // `dwCSGOInput` is the global CCSGOInput object itself, not a pointer to
+    // it: its first qword is the vtable. Dereferencing the global returned the
+    // read-only vtable in .rdata, and movement then crashed writing
+    // m_flForwardMove/m_flLeftMove into that page.
+    Some(csgo_input_from_base(client))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn csgo_input_points_at_the_object_not_its_vtable() {
+        let base = 0x7FFE_6D4A_0000usize;
+        assert_eq!(csgo_input_from_base(base), base + 0x2574560);
+        assert_ne!(csgo_input_from_base(base), base + 0x1C9D4B0);
+    }
 }
 
 #[inline]

@@ -12,9 +12,10 @@ echo [1/2] Building wallbang.dll...
 cargo build --release -p wallbang || exit /b 1
 
 echo [2/2] Building wallbang.exe (DLL embedded)...
-cargo build --release -p wallbang_loader --bin wallbang_gui || exit /b 1
+cargo build --release -p wallbang_loader --bin wallbang_loader || exit /b 1
 
-copy /y target\release\wallbang_gui.exe dist\wallbang.exe >nul
+copy /y target\release\wallbang.dll dist\wallbang.dll >nul
+copy /y target\release\wallbang_loader.exe dist\wallbang.exe >nul
 if not exist dist\wallbang.exe (
   echo BUILD FAILED: dist\wallbang.exe missing
   exit /b 1

@@ -2,6 +2,7 @@
 // Только чтение памяти и вызовы движка; прямые записи в игру не делает.
 use crate::{memory, modules, pattern};
 use std::ffi::{c_char, CString};
+use std::sync::OnceLock;
 use wallbang_config::signatures::{
     SIG_HUD, SIG_HUD_DISP, SIG_MAIN_MENU, SIG_MAIN_MENU_DISP, SIG_PUI_ENGINE, SIG_PUI_ENGINE_DISP,
 };
@@ -56,18 +57,24 @@ unsafe fn wrapper_panel(global: usize) -> Option<usize> {
 
 #[inline]
 unsafe fn hud_panel() -> Option<usize> {
-    let address = pattern::scan_module("client.dll", SIG_HUD)?;
-    let disp = memory::read::<i32>(address + SIG_HUD_DISP)? as isize;
-    let global = (address + SIG_HUD_DISP + 4).wrapping_add_signed(disp);
+    static GLOBAL: OnceLock<Option<usize>> = OnceLock::new();
+    let global = *GLOBAL.get_or_init(|| signature_global(SIG_HUD, SIG_HUD_DISP));
+    let global = global?;
     wrapper_panel(global)
 }
 
 #[inline]
 unsafe fn menu_panel() -> Option<usize> {
-    let address = pattern::scan_module("client.dll", SIG_MAIN_MENU)?;
-    let disp = memory::read::<i32>(address + SIG_MAIN_MENU_DISP)? as isize;
-    let global = (address + SIG_MAIN_MENU_DISP + 4).wrapping_add_signed(disp);
+    static GLOBAL: OnceLock<Option<usize>> = OnceLock::new();
+    let global = *GLOBAL.get_or_init(|| signature_global(SIG_MAIN_MENU, SIG_MAIN_MENU_DISP));
+    let global = global?;
     wrapper_panel(global)
+}
+
+fn signature_global(signature: &str, displacement: usize) -> Option<usize> {
+    let address = pattern::scan_module("client.dll", signature)?;
+    let disp = unsafe { memory::read::<i32>(address + displacement)? } as isize;
+    Some((address + displacement + 4).wrapping_add_signed(disp))
 }
 
 /// Ищет живой UI root. `preferred` решает, какой root использовать, когда

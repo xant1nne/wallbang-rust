@@ -1,7 +1,7 @@
 // Serialized mirror of the C++ menu controls that are not mapped to dedicated Settings blocks.
 // Kept as one object so profile save/load never drops a visual or inventory field.
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use crate::collections::HashMap;
 
 pub type UiColor = [u8; 4];
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -163,6 +163,26 @@ pub const CATALOG_ITEMS: &[SkinItem] = &[
     SkinItem { def_index: 30, name: "Tec-9", category: 0, rarity: 2, default_skin: None },
     SkinItem { def_index: 3, name: "Five-SeveN", category: 0, rarity: 2, default_skin: None },
     SkinItem { def_index: 64, name: "R8 Revolver", category: 0, rarity: 2, default_skin: None },
+    SkinItem { def_index: 2, name: "Dual Berettas", category: 0, rarity: 0, default_skin: None },
+    SkinItem { def_index: 8, name: "AUG", category: 0, rarity: 0, default_skin: None },
+    SkinItem { def_index: 11, name: "G3SG1", category: 0, rarity: 0, default_skin: None },
+    SkinItem { def_index: 14, name: "M249", category: 0, rarity: 0, default_skin: None },
+    SkinItem { def_index: 19, name: "P90", category: 0, rarity: 0, default_skin: None },
+    SkinItem { def_index: 23, name: "MP5-SD", category: 0, rarity: 0, default_skin: None },
+    SkinItem { def_index: 24, name: "UMP-45", category: 0, rarity: 0, default_skin: None },
+    SkinItem { def_index: 25, name: "XM1014", category: 0, rarity: 0, default_skin: None },
+    SkinItem { def_index: 26, name: "PP-Bizon", category: 0, rarity: 0, default_skin: None },
+    SkinItem { def_index: 27, name: "MAG-7", category: 0, rarity: 0, default_skin: None },
+    SkinItem { def_index: 28, name: "Negev", category: 0, rarity: 0, default_skin: None },
+    SkinItem { def_index: 29, name: "Sawed-Off", category: 0, rarity: 0, default_skin: None },
+    SkinItem { def_index: 32, name: "P2000", category: 0, rarity: 0, default_skin: None },
+    SkinItem { def_index: 33, name: "MP7", category: 0, rarity: 0, default_skin: None },
+    SkinItem { def_index: 35, name: "Nova", category: 0, rarity: 0, default_skin: None },
+    SkinItem { def_index: 36, name: "P250", category: 0, rarity: 0, default_skin: None },
+    SkinItem { def_index: 38, name: "SCAR-20", category: 0, rarity: 0, default_skin: None },
+    SkinItem { def_index: 39, name: "SG 553", category: 0, rarity: 0, default_skin: None },
+    SkinItem { def_index: 63, name: "CZ75-Auto", category: 0, rarity: 0, default_skin: None },
+    SkinItem { def_index: 31, name: "Zeus x27", category: 0, rarity: 0, default_skin: None },
     // Knives
     SkinItem { def_index: 507, name: "Karambit", category: 1, rarity: 6, default_skin: Some(("Doppler", 6)) },
     SkinItem { def_index: 515, name: "Butterfly Knife", category: 1, rarity: 6, default_skin: Some(("Fade", 6)) },
@@ -170,11 +190,29 @@ pub const CATALOG_ITEMS: &[SkinItem] = &[
     SkinItem { def_index: 500, name: "Bayonet", category: 1, rarity: 6, default_skin: None },
     SkinItem { def_index: 523, name: "Talon Knife", category: 1, rarity: 6, default_skin: None },
     SkinItem { def_index: 525, name: "Skeleton Knife", category: 1, rarity: 6, default_skin: None },
+    SkinItem { def_index: 522, name: "Stiletto Knife", category: 1, rarity: 6, default_skin: None },
+    SkinItem { def_index: 521, name: "Nomad Knife", category: 1, rarity: 6, default_skin: None },
+    SkinItem { def_index: 505, name: "Flip Knife", category: 1, rarity: 6, default_skin: None },
+    SkinItem { def_index: 506, name: "Gut Knife", category: 1, rarity: 6, default_skin: None },
+    SkinItem { def_index: 509, name: "Huntsman Knife", category: 1, rarity: 6, default_skin: None },
+    SkinItem { def_index: 512, name: "Falchion Knife", category: 1, rarity: 6, default_skin: None },
+    SkinItem { def_index: 514, name: "Bowie Knife", category: 1, rarity: 6, default_skin: None },
+    SkinItem { def_index: 516, name: "Shadow Daggers", category: 1, rarity: 6, default_skin: None },
+    SkinItem { def_index: 519, name: "Ursus Knife", category: 1, rarity: 6, default_skin: None },
+    SkinItem { def_index: 520, name: "Navaja Knife", category: 1, rarity: 6, default_skin: None },
+    SkinItem { def_index: 517, name: "Paracord Knife", category: 1, rarity: 6, default_skin: None },
+    SkinItem { def_index: 518, name: "Survival Knife", category: 1, rarity: 6, default_skin: None },
+    SkinItem { def_index: 503, name: "Classic Knife", category: 1, rarity: 6, default_skin: None },
+    SkinItem { def_index: 526, name: "Kukri Knife", category: 1, rarity: 6, default_skin: None },
     // Gloves
     SkinItem { def_index: 5030, name: "Sport Gloves", category: 2, rarity: 6, default_skin: Some(("Vice", 6)) },
     SkinItem { def_index: 5034, name: "Specialist Gloves", category: 2, rarity: 6, default_skin: None },
     SkinItem { def_index: 5033, name: "Moto Gloves", category: 2, rarity: 6, default_skin: None },
     SkinItem { def_index: 5031, name: "Driver Gloves", category: 2, rarity: 6, default_skin: None },
+    SkinItem { def_index: 5032, name: "Hand Wraps", category: 2, rarity: 6, default_skin: None },
+    SkinItem { def_index: 5027, name: "Bloodhound Gloves", category: 2, rarity: 6, default_skin: None },
+    SkinItem { def_index: 5035, name: "Hydra Gloves", category: 2, rarity: 6, default_skin: None },
+    SkinItem { def_index: 4725, name: "Broken Fang Gloves", category: 2, rarity: 6, default_skin: None },
     // Agents
     SkinItem { def_index: 5601, name: "Cmdr. Davida Fernandez", category: 3, rarity: 5, default_skin: None },
     SkinItem { def_index: 5105, name: "Sir Bloody Darryl", category: 3, rarity: 5, default_skin: None },
@@ -338,6 +376,7 @@ pub struct ExtendedUiState {
     pub vm_xyzf: [f32; 4],
     pub hotkeys_hud: bool,
     pub indicators_hud: bool,
+    pub spotify_hud: bool,
     pub edit_hud: bool,
     /// Normalized HUD positions: [watermark, hotkeys, indicators, spectators].
     /// Defaults match the C++ interface layout.
@@ -350,7 +389,7 @@ pub struct ExtendedUiState {
 
 impl Default for ExtendedUiState {
     fn default() -> Self {
-        let mut applied_skins = HashMap::new();
+        let mut applied_skins = HashMap::default();
         applied_skins.insert(7, (1, 0.12, 421, true));
         applied_skins.insert(60, (3, 0.04, 108, true));
         applied_skins.insert(9, (4, 0.02, 661, false));
@@ -487,6 +526,7 @@ impl Default for ExtendedUiState {
             // HUD overlays stay off until the features are actually implemented.
             hotkeys_hud: false,
             indicators_hud: false,
+            spotify_hud: false,
             edit_hud: false,
             hud_pos: [
                 [1.0, 0.0], // watermark: top right

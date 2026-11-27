@@ -301,8 +301,6 @@ dependencies = [
 [[package]]
 name = "parking_lot"
 version = "0.12.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93857453250e3077bd71ff98b6a65ea6621a19bb0f559a85248955ac12c45a1a"
 dependencies = [
  "lock_api",
  "parking_lot_core",
@@ -311,8 +309,6 @@ dependencies = [
 [[package]]
 name = "parking_lot_core"
 version = "0.9.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1"
 dependencies = [
  "cfg-if",
  "libc",
@@ -536,6 +532,7 @@ dependencies = [
  "mlua",
  "parking_lot",
  "serde_json",
+ "wallbang_config",
 ]
 
 [[package]]
@@ -545,6 +542,7 @@ dependencies = [
  "gltf",
  "image",
  "parking_lot",
+ "serde",
  "serde_json",
  "wallbang_config",
  "wallbang_core",

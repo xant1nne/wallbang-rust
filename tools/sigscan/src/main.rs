@@ -117,6 +117,11 @@ fn main() {
     }
     let pe = Pe::load(&args[2]);
     match args[1].as_str() {
+        "table" => {
+            let rva = u32::from_str_radix(args[3].trim_start_matches("0x"), 16).unwrap();
+            let raw = pe.rva_to_raw(rva).unwrap();
+            for i in 0..80 { println!("slot {i}: 0x{:X}", u64_at(&pe.image, raw+i*8)); }
+        }
         "pattern" => {
             for spec in &args[3..] {
                 let (name, text) = spec.split_once('=').expect("name=pattern");

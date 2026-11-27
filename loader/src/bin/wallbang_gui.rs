@@ -1,4 +1,4 @@
-// Config block: WINDOW_W/H, TICK_SLEEP_MS, CS2_PATH, CLIENT_WAIT_MS, palette.
+// Config block: WINDOW_W/H, TICK_SLEEP_MS, STEAM_PATH, CLIENT_WAIT_MS, palette.
 // Frameless borderless GUI loader in the wallbang menu style: Win32 popup window
 // (no OS frame), own D3D11 swapchain, drawn with the same DrawList as the game
 // menu. LOAD runs the manual-map pipeline on a worker thread.
@@ -42,8 +42,9 @@ const WINDOW_W: i32 = 400;
 const WINDOW_H: i32 = 380;
 const TICK_SLEEP_MS: u64 = 8;
 const CLIENT_WAIT_MS: u32 = 120_000;
-const CS2_PATH: &str =
-    r"C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Global Offensive\game\bin\win64\cs2.exe";
+const STEAM_PATH: &str =r"C:\Program Files (x86)\Steam\steam.exe";
+const LAUNCH_INSECURE:bool=true;
+const ERROR_LOG_NAME: &str = "wallbang-loader.log";
 const VK_ESCAPE: usize = 0x1B;
 
 const BG: [u8; 4] = [8, 9, 11, 255];
@@ -253,7 +254,18 @@ fn start_injection() {
             Err(error) => {
                 PROGRESS.store(0, Ordering::Relaxed);
                 FAILED.store(true, Ordering::Relaxed);
-                set_status(&format!("Failed: {error}"));
+                let log = std::env::current_exe().ok()
+                    .and_then(|path| path.parent().map(|dir| dir.join(ERROR_LOG_NAME)))
+                    .unwrap_or_else(|| std::env::temp_dir().join(ERROR_LOG_NAME));
+                let report = format!("{:?}\nloader={}\n{error}\n", std::time::SystemTime::now(),
+                    std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default());
+                let saved = std::fs::write(&log, &report).is_ok()
+                    || std::fs::write(std::env::temp_dir().join(ERROR_LOG_NAME), &report).is_ok();
+                if saved {
+                    set_status(&format!("Failed: {}; see {ERROR_LOG_NAME}", error.split(';').next().unwrap_or(&error).split(':').next().unwrap_or(&error)));
+                } else {
+                    set_status(&format!("Failed: {error}"));
+                }
             }
         }
         BUSY.store(false, Ordering::SeqCst);
@@ -261,31 +273,26 @@ fn start_injection() {
 }
 
 fn run_injection() -> Result<(), String> {
-    let pid = match find_process::wait_for_process("cs2.exe", 0) {
-        Some(pid) => {
-            PROGRESS.store(25, Ordering::Relaxed);
-            set_status("CS2 already running - attaching");
-            pid
-        }
-        None => {
+    let selection=find_process::attach_or_launch(
+        ||find_process::find_existing("cs2.exe"),
+        ||{
             PROGRESS.store(10, Ordering::Relaxed);
-            set_status("Launching CS2...");
-            find_process::launch_cs2(Path::new(CS2_PATH), false)
-                .map_err(|error| format!("launch: {error}"))?
-        }
-    };
+            set_status("Launching CS2 through Steam (-insecure)...");
+            find_process::launch_cs2(Path::new(STEAM_PATH), LAUNCH_INSECURE)
+        },
+        ||find_process::wait_for_process("cs2.exe",CLIENT_WAIT_MS)
+    )?;
+    let pid=selection.pid;
+    PROGRESS.store(25,Ordering::Relaxed);
+    set_status(&format!("CS2 PID {pid} - {}",if selection.already_running {"attaching"}else{"started"}));
+    let process=find_process::open_process(pid)?;
     PROGRESS.store(35, Ordering::Relaxed);
     set_status("Waiting for client.dll...");
-    if !find_process::wait_for_module(pid, "client.dll", CLIENT_WAIT_MS) {
-        return Err("client.dll not loaded".to_owned());
-    }
+    find_process::wait_for_module(pid,&process,"client.dll",CLIENT_WAIT_MS)?;
     PROGRESS.store(62, Ordering::Relaxed);
     set_status("Mapping wallbang.dll...");
     let bytes = dll_bytes()?;
-    let handle = find_process::process_handle(pid);
-    if handle.0.is_null() {
-        return Err("OpenProcess failed".to_owned());
-    }
+    let handle=process.raw();
     let image = unsafe { map::map_image(handle, &bytes) }
         .map_err(|error| format!("manual map: {error}"))?;
     PROGRESS.store(85, Ordering::Relaxed);

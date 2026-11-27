@@ -31,7 +31,6 @@ use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 #[link(name = "kernel32")]
 extern "system" {
     fn GetModuleHandleA(name: *const std::ffi::c_char) -> *mut c_void;
-    fn GetTickCount64() -> u64;
 }
 
 #[link(name = "user32")]
@@ -39,6 +38,45 @@ extern "system" {
     fn ShowCursor(show: i32) -> i32;
     fn ClipCursor(rect: *const c_void) -> i32;
     fn GetCursorInfo(info: *mut CursorInfo) -> i32;
+    fn ScreenToClient(window: *mut c_void, point: *mut wallbang_core::input::Point) -> i32;
+    fn GetClientRect(window: *mut c_void, rect: *mut [i32; 4]) -> i32;
+    fn PostMessageW(window: *mut c_void, message: u32, wparam: usize, lparam: isize) -> i32;
+    fn LoadCursorW(instance: *mut c_void, name: *const u16) -> *mut c_void;
+    fn SetCursor(cursor: *mut c_void) -> *mut c_void;
+}
+
+const MENU_CURSOR_MESSAGE: u32 = 0x8000 + 0x57A;
+static SDL_RELATIVE_SAVED: Mutex<Option<(usize, bool)>> = Mutex::new(None);
+
+// SDL owns relative input. Run its UI API on the window thread, never Present.
+unsafe fn native_menu_cursor(open: bool) {
+    let export = |name: &'static [u8]| {
+        wallbang_core::modules::export("SDL3.dll", std::ffi::CStr::from_bytes_with_nul(name).unwrap())
+    };
+    if let (Some(focus), Some(get), Some(set)) = (
+        export(b"SDL_GetMouseFocus\0"), export(b"SDL_GetWindowRelativeMouseMode\0"),
+        export(b"SDL_SetWindowRelativeMouseMode\0")) {
+        let focus: unsafe extern "C" fn() -> usize = std::mem::transmute(focus);
+        let get: unsafe extern "C" fn(usize) -> bool = std::mem::transmute(get);
+        let set: unsafe extern "C" fn(usize, bool) -> bool = std::mem::transmute(set);
+        let mut saved = SDL_RELATIVE_SAVED.lock();
+        if open {
+            let window = saved.as_ref().map(|v| v.0).unwrap_or_else(|| focus());
+            if window != 0 {
+                if saved.is_none() { *saved = Some((window, get(window))); }
+                set(window, false);
+            }
+        } else if let Some((window, relative)) = saved.take() { set(window, relative); }
+    }
+    if open {
+        ClipCursor(std::ptr::null());
+        SetCursor(LoadCursorW(std::ptr::null_mut(), 32512usize as *const u16));
+        let mut info = CursorInfo { size: std::mem::size_of::<CursorInfo>() as u32,
+            flags: 0, cursor: std::ptr::null_mut(), position: [0, 0] };
+        if GetCursorInfo(&mut info) != 0 && info.flags & CURSOR_SHOWING == 0 {
+            for _ in 0..16 { if ShowCursor(1) >= 0 { break; } }
+        }
+    }
 }
 
 #[repr(C)]
@@ -52,6 +90,53 @@ struct CursorInfo {
 const CURSOR_SHOWING: u32 = 0x0000_0001;
 
 const PRESENT_SLOT: usize = 8;
+static MENU_CLICK_PENDING: AtomicBool = AtomicBool::new(false);
+
+pub fn take_menu_click() -> bool {
+    MENU_CLICK_PENDING.swap(false, Ordering::Relaxed)
+}
+pub fn has_menu_input() -> bool {
+    WNDPROC_ORIG.load(Ordering::Relaxed) != 0
+}
+
+/// UI geometry is in backbuffer pixels, GetCursorPos is in desktop pixels.
+pub fn menu_pointer(width: f32, height: f32) -> Option<wallbang_core::math::Vec2> {
+    let mut point = wallbang_core::input::cursor_position()?;
+    let window = WNDPROC_HWND.load(Ordering::Relaxed) as *mut c_void;
+    if window.is_null() { return None; }
+    let mut rect = [0i32; 4];
+    unsafe {
+        if ScreenToClient(window, &mut point) == 0 || GetClientRect(window, &mut rect) == 0 { return None; }
+    }
+    pointer_to_backbuffer(point.x as f32, point.y as f32,
+        (rect[2] - rect[0]) as f32, (rect[3] - rect[1]) as f32, width, height)
+}
+
+fn pointer_to_backbuffer(x: f32, y: f32, client_w: f32, client_h: f32,
+    width: f32, height: f32) -> Option<wallbang_core::math::Vec2> {
+    if ![x,y,client_w,client_h,width,height].iter().all(|v| v.is_finite()) ||
+        client_w <= 0.0 || client_h <= 0.0 || width <= 0.0 || height <= 0.0 { return None; }
+    Some(wallbang_core::math::Vec2::new(x * width / client_w, y * height / client_h))
+}
+
+#[cfg(test)]
+mod pointer_tests {
+    use super::pointer_to_backbuffer;
+
+    #[test]
+    fn maps_client_pixels_to_render_resolution() {
+        let point = pointer_to_backbuffer(640.0, 360.0, 1280.0, 720.0, 1920.0, 1080.0).unwrap();
+        assert_eq!((point.x, point.y), (960.0, 540.0));
+        let outside = pointer_to_backbuffer(-20.0, 0.0, 1280.0, 720.0, 1920.0, 1080.0).unwrap();
+        assert_eq!(outside.x, -30.0);
+    }
+
+    #[test]
+    fn rejects_minimized_and_invalid_surfaces() {
+        assert!(pointer_to_backbuffer(0.0, 0.0, 0.0, 720.0, 1920.0, 1080.0).is_none());
+        assert!(pointer_to_backbuffer(f32::NAN, 0.0, 1280.0, 720.0, 1920.0, 1080.0).is_none());
+    }
+}
 
 static DX: Mutex<Option<Dx11>> = Mutex::new(None);
 static MENU: Mutex<Option<Menu>> = Mutex::new(None);
@@ -62,7 +147,6 @@ static OVERLAY: Mutex<Option<OverlayFn>> = Mutex::new(None);
 static FRAME: Mutex<Option<fn()>> = Mutex::new(None);
 static TRACE: Mutex<Option<fn(&str)>> = Mutex::new(None);
 static PRESENT_TRACES: AtomicU32 = AtomicU32::new(0);
-static LAST_REFRESH_MS: AtomicU64 = AtomicU64::new(0);
 static WNDPROC_ORIG: AtomicIsize = AtomicIsize::new(0);
 static WNDPROC_HWND: AtomicIsize = AtomicIsize::new(0);
 static WHEEL_DELTA: AtomicI32 = AtomicI32::new(0);
@@ -74,6 +158,11 @@ static MENU_US: AtomicU64 = AtomicU64::new(0);
 static MODEL_US: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_US: AtomicU64 = AtomicU64::new(0);
 static STAT_FRAMES: AtomicU32 = AtomicU32::new(0);
+static FRAME_TIMING: Mutex<Option<(std::time::Instant, f32)>> = Mutex::new(None);
+
+pub fn frame_fps() -> f32 {
+    FRAME_TIMING.lock().as_ref().map(|(_, fps)| *fps).unwrap_or(0.0)
+}
 
 pub type OverlayFn = fn(&mut DrawList, &wallbang_core::state::GameState);
 
@@ -113,8 +202,19 @@ unsafe extern "system" fn hk_wndproc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if msg == MENU_CURSOR_MESSAGE {
+        native_menu_cursor(crate::menu::is_menu_open());
+        return LRESULT(0);
+    }
+    if msg == 0x0020 && crate::menu::is_menu_open() {
+        native_menu_cursor(true);
+        return LRESULT(1);
+    }
     const WM_MOUSEWHEEL: u32 = 0x020A;
     const WM_INPUT: u32 = 0x00FF;
+    if msg == 0x0201 && crate::menu::is_menu_open() {
+        MENU_CLICK_PENDING.store(true, Ordering::Relaxed);
+    }
     if msg == WM_MOUSEWHEEL {
         let delta = ((wparam.0 >> 16) as u16) as i16 as i32;
         WHEEL_DELTA.fetch_add(delta, Ordering::Relaxed);
@@ -143,30 +243,17 @@ pub fn update_menu_cursor(open: bool) {
     if MENU_CURSOR.swap(open, Ordering::Relaxed) == open {
         return;
     }
-    unsafe {
-        if open {
-            enforce_menu_cursor();
-        } else {
-            while ShowCursor(0) >= 0 {}
-        }
-    }
+    if !open { MENU_CLICK_PENDING.store(false, Ordering::Relaxed); }
+    enforce_menu_cursor();
 }
 
 /// Must run every frame while the menu is open: the game re-applies
 /// `ClipCursor(RECT)` and hides the cursor from its own CreateMove/input code,
 /// so a one-shot release is not enough to keep the menu usable.
 pub fn enforce_menu_cursor() {
-    unsafe {
-        ClipCursor(std::ptr::null());
-        let mut info = CursorInfo {
-            size: std::mem::size_of::<CursorInfo>() as u32,
-            flags: 0,
-            cursor: std::ptr::null_mut(),
-            position: [0, 0],
-        };
-        if GetCursorInfo(&mut info) != 0 && info.flags & CURSOR_SHOWING == 0 {
-            while ShowCursor(1) < 0 {}
-        }
+    let hwnd = WNDPROC_HWND.load(Ordering::Relaxed) as *mut c_void;
+    if !hwnd.is_null() {
+        unsafe { PostMessageW(hwnd, MENU_CURSOR_MESSAGE, 0, 0); }
     }
 }
 
@@ -281,6 +368,21 @@ unsafe fn create_vtable_probe() -> Result<IDXGISwapChain, String> {
 unsafe extern "system" fn hk_present(swapchain: *mut c_void, sync: u32, flags: u32) -> i32 {
     type PresentFn = unsafe extern "system" fn(*mut c_void, u32, u32) -> i32;
     let original = PRESENT_HOOK.lock().as_ref().map(|h| h.original());
+    let now = std::time::Instant::now();
+    {
+        let mut timing = FRAME_TIMING.lock();
+        match timing.as_mut() {
+            Some((last, rolling)) => {
+                let dt = now.saturating_duration_since(*last).as_secs_f32();
+                if dt > 0.000_1 && dt < 1.0 {
+                    let sample = 1.0 / dt;
+                    *rolling = if *rolling > 0.0 { *rolling * 0.9 + sample * 0.1 } else { sample };
+                }
+                *last = now;
+            }
+            None => *timing = Some((now, 0.0)),
+        }
+    }
 
     if !swapchain.is_null() {
         if let Some(sc) = IDXGISwapChain::from_raw_borrowed(&swapchain) {
@@ -307,16 +409,11 @@ unsafe extern "system" fn hk_present(swapchain: *mut c_void, sync: u32, flags: u
                 // размеру рабочего стола: GetSystemMetrics даёт desktop, и при
                 // неродном разрешении/растяжке кадр «уезжает».
                 wallbang_core::state::set_viewport(renderer.width, renderer.height);
-                // Снимок мира не обязан обновляться на каждый Present: при 300+ FPS
-                // это лишний проход по entity list и лишние локи.
-                let now = GetTickCount64();
-                let last = LAST_REFRESH_MS.load(Ordering::Relaxed);
-                if now.saturating_sub(last) >= 16 {
-                    LAST_REFRESH_MS.store(now, Ordering::Relaxed);
-                    let t = std::time::Instant::now();
-                    state.refresh();
-                    REFRESH_US.fetch_add(t.elapsed().as_micros() as u64, Ordering::Relaxed);
-                }
+                // Снимок мира занимает ~4us; обновляем каждый кадр, чтобы
+                // view_matrix для ESP не отставал на 60 Гц при 200+ FPS.
+                let t = std::time::Instant::now();
+                state.refresh();
+                REFRESH_US.fetch_add(t.elapsed().as_micros() as u64, Ordering::Relaxed);
                 let mut list_guard = DRAW.lock();
                 let list = list_guard.get_or_insert_with(DrawList::new);
                 list.begin(w, h);
@@ -333,6 +430,12 @@ unsafe extern "system" fn hk_present(swapchain: *mut c_void, sync: u32, flags: u
                 let menu = menu_guard.get_or_insert_with(Menu::new);
                 menu.frame(list, &state, w, h);
                 MENU_US.fetch_add(t.elapsed().as_micros() as u64, Ordering::Relaxed);
+                // Request is produced by this frame's menu. Closing the menu
+                // clears it before any preview draw, without an engine heartbeat.
+                let inspect = crate::skin_inspect::request().and_then(|request| {
+                    renderer.render_weapon(&request).map(|srv| (request.rect, srv))
+                });
+                crate::skin_inspect::report_capture(inspect.is_some());
                 let model_request = crate::preview::model_request();
                 let t = std::time::Instant::now();
                 let model_srv = if model_request.active {
@@ -346,19 +449,29 @@ unsafe extern "system" fn hk_present(swapchain: *mut c_void, sync: u32, flags: u
                     None
                 };
                 MODEL_US.fetch_add(t.elapsed().as_micros() as u64, Ordering::Relaxed);
+                let pp_cfg = state.settings().postprocess;
+                renderer.apply_postprocess(swapchain, &pp_cfg);
                 renderer.draw(list.vertices());
+                renderer.draw_music_art();
+                if let Some((rect, srv)) = inspect.as_ref() {
+                    renderer.draw_weapon_preview((rect[0],rect[1],rect[2],rect[3]), srv);
+                }
+                renderer.draw_inventory_icons(list.inventory_icons());
                 let t = std::time::Instant::now();
                 if let Some(srv) = model_srv.as_ref() {
                     renderer.draw_preview(model_request.rect, Some(srv));
                 } else if let Some(rect) = preview_rect {
                     renderer.draw_preview(rect, None);
                 }
-                if model_srv.is_some() {
+                if model_srv.is_some() && model_request.show_esp {
                     let mut overlay_guard = ESP_OVERLAY.lock();
                     let overlay = overlay_guard.get_or_insert_with(DrawList::new);
                     overlay.begin(w, h);
                     crate::preview::draw_esp_overlay(overlay, model_request.rect);
                     renderer.draw(overlay.vertices());
+                }
+                if !list.inventory_icons().is_empty() || inspect.is_some() {
+                    renderer.draw(list.flushed_top_vertices());
                 }
                 PREVIEW_US.fetch_add(t.elapsed().as_micros() as u64, Ordering::Relaxed);
                 HOOK_US.fetch_add(
@@ -374,8 +487,9 @@ unsafe extern "system" fn hk_present(swapchain: *mut c_void, sync: u32, flags: u
                     let model = MODEL_US.swap(0, Ordering::Relaxed) / n;
                     let preview = PREVIEW_US.swap(0, Ordering::Relaxed) / n;
                     let profile = wallbang_core::state::profile_summary();
+                    let (inspect_avg, inspect_max) = crate::skin_inspect::take_profile();
                     crate::trace(&format!(
-                        "timing: hook={hook}us refresh={refresh}us esp={esp}us menu={menu}us model={model}us preview={preview}us | {profile}"
+                        "timing: hook={hook}us refresh={refresh}us esp={esp}us menu={menu}us model={model}us preview={preview}us inspect_dx11={inspect_avg}us inspect_max={inspect_max}us | {profile}"
                     ));
                 }
             }

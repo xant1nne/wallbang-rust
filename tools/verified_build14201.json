@@ -1,0 +1,27 @@
+{
+  "build": 14201,
+  "method": "Local PE signature scan, LLVM disassembly, IDA IDC engine interface xrefs",
+  "engine2.dll": {
+    "Source2EngineToClient001_factory_rva": "0x73870",
+    "instance_rva": "0x6B5D40",
+    "vtable_rva": "0x5D1318",
+    "ExecuteClientCmd": {"slot": 51, "rva": "0x738D0", "stack_arguments": ["double input_time", "uint64 SDL_timestamp"]},
+    "GetLevelNameShort": {"slot": 65, "rva": "0x74020"}
+  },
+  "client.dll": {
+    "FireEventClientSide": {"rva": "0x9E22C0", "vtable_entry_rva": "0x1C32038"},
+    "GameEvent_GetName": {"rva": "0x9E7650", "slot": 1},
+    "GameEvent_GetInt": {"rva": "0x9E6920", "slot": 7, "key": "16-byte CUtlStringToken, Murmur2 seed 0x31415926"},
+    "ShaderFloatSetter": "0x16A960",
+    "ShaderIntSetter": "0x16A530"
+  },
+  "scenesystem.dll": {
+    "scene_light_call": "0x1A30A6",
+    "scene_light_target": "0x19F300",
+    "light_rgb_offset": "0xE4",
+    "sky_rgb_offset": "0xE8",
+    "sky_mesh_stride": "0x70",
+    "rejected_old_world_walk": "CA8 is a pointer; nodes are not inline tint records. Aggregate +30 is an index-array pointer, not a light-buffer index."
+  },
+  "runtime_game_validation": "not performed; CS2 was not running during implementation"
+}

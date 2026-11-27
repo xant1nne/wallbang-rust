@@ -1,8 +1,8 @@
 // Config block: подписи проверены `tools/sigscan` на локальном client.dll (2026-11-24).
 // Каждая запись — name=pattern; `?` — wildcard. Уникальные сигнатуры помечены UNIQUE.
 
-/// client.dll, UNIQUE (RVA 0x178C140): CCSGOInput::CreateMove.
-pub const SIG_CREATE_MOVE: &str = "48 8B C4 4C 89 40 ? 48 89 48 ? 55 53 56 57 48 8D A8";
+/// Build 14201: slot 5 RVA B60580, contains AutoMakeUserCmd call B60637.
+pub const SIG_CREATE_MOVE: &str = "85 D2 0F 85 ? ? ? ? 48 8B C4 44 88 40 18 89 50 10 48 89 48 08 55 53 56 41 54";
 /// Первые 15 байт CreateMove — ровно на границе инструкций (3+4+4+1+1+1+1),
 /// поэтому пролог-хук ворует их без риска разрезать инструкцию.
 pub const SIG_CREATE_MOVE_PROLOGUE: &str = "48 8B C4 4C 89 40 ? 48 89 48 ? 55 53 56 57";
@@ -114,6 +114,10 @@ pub const DRAW_SCENE_OBJECT_ARRAY_STEAL_BYTES: usize = 23;
 /// `CRenderScene::DrawSceneObjectArray`. Verified offline from the local dump.
 pub const DRAW_SCENE_OBJECT_ARRAY_RVA: usize = 0x3C5A0;
 pub const DRAW_SCENE_OBJECT_ARRAY_SLOT_RVA: usize = 0x5E4550;
+/// scenesystem.dll, build 14201: `DrawSceneObject` vtable slot 1 (vtable RVA 0x5E4668,
+/// unique lea `48 8D 05 ? ? ? ? 48 89 07 48 8B 7C 24 48` at RVA 0x77D2C).
+pub const DRAW_SCENE_OBJECT_RVA: usize = 0x7A540;
+pub const DRAW_SCENE_OBJECT_SLOT_RVA: usize = 0x5E4670;
 /// scenesystem.dll, UNIQUE (RVA 0x154FB0): skybox draw entry.
 /// Источник: web (HvH sig list), проверено tools/sigscan — одно совпадение.
 pub const SIG_DRAW_SKYBOX_ARRAY: &str = "45 85 C9 0F 8E ? ? ? ? 4C 8B DC";
@@ -132,6 +136,20 @@ pub const SIG_RENDER_SMOKE: &str = "5C 24 28 48 89 44 24 20 E8 ? ? ? ? 48 8B 5C 
 pub const SIG_PREPARE_SCENE_MATERIAL: &str = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 30 48 8B 59 20";
 /// Путь к IDA Pro Хозяина (для реверса недостающих сигнатур).
 pub const IDA_PRO_PATH: &str = r"C:\Users\dmitr\Downloads\AyuGram Desktop\IDA Pro\IDA Pro";
+
+/// Unique in local newclient/client.dll: callsite B58C79, allocator 4F8D00.
+pub const SIG_SUBTICK_ALLOC_SITE: &str = "48 8B 0F E8 ? ? ? ? 48 8B D0 48 8B CF E8 ? ? ? ? 48 8B D0 48 8B 0B 8B 42 10";
+pub const SIG_REPEATED_PUSH: &str = "48 89 5C 24 08 57 48 83 EC 20 48 8B D9 48 8B FA 48 8B 49 10 48 85 C9";
+/// Build 14201: legacy Celerity label ApplyEconCustomization is OnDataChanged.
+pub const SIG_ECON_DATA_CHANGED: &str = "48 89 5C 24 08 57 48 83 EC 20 8B FA 48 8B D9 E8 ? ? ? ? 48 8B CB E8 ? ? ? ? 48 85 C0 74";
+/// Native rebuild path, shared by C_EconEntity and HUD model global refresh.
+pub const SIG_BUILD_ECON_MATERIALS: &str = "48 85 C9 0F 84 ? ? ? ? 55 56 57 41 56 41 57 48 8D AC 24 60 FD FF FF 48 81 EC A0 03 00 00 48 8B 05 ? ? ? ? 45 0F B6 F9 45 0F B6 F0 48 8B FA 48 8B F1";
+pub const SIG_ECON_MATERIAL_CONTEXT: &str = "40 53 48 83 EC 20 48 8B D9 48 85 C9 75 08 32 C0 48 83 C4 20 5B C3 48 8D 0D ? ? ? ?";
+pub const SIG_REGENERATE_SKIN: &str = "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 41 56 41 57 48 83 EC 20 44 0F B6 F2 48 8B F9 E8 ? ? ? ? 45 33 FF";
+pub const SIG_SET_MODEL: &str = "40 53 48 83 EC ? 48 8B D9 4C 8B C2 48 8B 0D ? ? ? ? 48 8D 54 24";
+pub const SIG_SET_MESH_GROUP: &str = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8D 99 40 01 00 00";
+pub const SIG_UPDATE_SUBCLASS: &str = "4C 8B DC 53 48 81 EC ? ? ? ? 48 8B 41";
+pub const SIG_SET_BODY_GROUP_SITE: &str = "E8 ? ? ? ? EB 0C 48 8B CF";
 
 #[inline]
 pub fn missing() -> &'static [&'static str] {

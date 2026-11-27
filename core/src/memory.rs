@@ -91,12 +91,24 @@ pub unsafe fn validate_range(address: usize, size: usize) -> bool {
     range_readable(address, size)
 }
 
+/// Fast plausibility check for Windows x64 user-mode virtual addresses.
+#[inline]
+pub const fn is_plausible_ptr(address: usize) -> bool {
+    address >= 0x1_0000 && address < 0x0000_7FFF_FFFF_0000
+}
+
 #[inline]
 pub unsafe fn read_unchecked<T: Copy>(address: usize) -> Option<T> {
-    if address == 0 {
+    if !is_plausible_ptr(address) {
         return None;
     }
     Some(std::ptr::read_unaligned(address as *const T))
+}
+
+#[inline]
+pub unsafe fn read_ptr_unchecked(address: usize) -> Option<usize> {
+    let value = read_unchecked::<usize>(address)?;
+    is_plausible_ptr(value).then_some(value)
 }
 
 #[inline]

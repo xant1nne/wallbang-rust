@@ -59,6 +59,8 @@ fn marker_rgb(fmt: DXGI_FORMAT, px: &[u8]) -> Option<(u8, u8, u8)> {
 }
 
 pub struct Dx11 {
+    music_art: Option<(u64, ID3D11ShaderResourceView)>,
+    icons: Option<crate::skin_icons::IconCache>,
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     rtv: ID3D11RenderTargetView,
@@ -69,9 +71,12 @@ pub struct Dx11 {
     atlas: ID3D11ShaderResourceView,
     sampler: ID3D11SamplerState,
     blend: ID3D11BlendState,
+    premultiplied_blend: ID3D11BlendState,
     rasterizer: ID3D11RasterizerState,
     depth_stencil: ID3D11DepthStencilState,
     preview: Option<PreviewCapture>,
+    weapon: Option<crate::model::inspect::WeaponRenderer>,
+    weapon_initialization_failed: bool,
     model: Option<crate::model::ModelRenderer>,
     stage_idx: usize,
     last_log: Instant,
@@ -231,6 +236,11 @@ impl Dx11 {
         let mut blend_slot = None;
         device.CreateBlendState(&blend_desc, Some(&mut blend_slot)).ok()?;
         let blend = blend_slot?;
+        let mut premultiplied_desc=blend_desc;
+        premultiplied_desc.RenderTarget[0].SrcBlend=D3D11_BLEND_ONE;
+        let mut premultiplied_slot=None;
+        device.CreateBlendState(&premultiplied_desc,Some(&mut premultiplied_slot)).ok()?;
+        let premultiplied_blend=premultiplied_slot?;
 
         let rast_desc = D3D11_RASTERIZER_DESC {
             FillMode: D3D11_FILL_SOLID,
@@ -267,6 +277,8 @@ impl Dx11 {
         let desc = swapchain.GetDesc().ok()?;
 
         Some(Self {
+            music_art: None,
+            icons: None,
             device,
             context,
             rtv,
@@ -277,15 +289,52 @@ impl Dx11 {
             atlas,
             sampler,
             blend,
+            premultiplied_blend,
             rasterizer,
             depth_stencil,
             preview: None,
+            weapon: None,
+            weapon_initialization_failed: false,
             model,
             stage_idx: 0,
             last_log: Instant::now(),
             width: desc.BufferDesc.Width.max(1),
             height: desc.BufferDesc.Height.max(1),
         })
+    }
+
+    pub unsafe fn draw_music_art(&mut self) {
+        let Some((rect, track)) = crate::music::art_request() else { return; };
+        let Some(art) = track.art else { self.music_art = None; return; };
+        if self.music_art.as_ref().is_none_or(|(revision, _)| *revision != track.revision) {
+            let desc = D3D11_TEXTURE2D_DESC { Width: art.width(), Height: art.height(), MipLevels: 1, ArraySize: 1,
+                Format: DXGI_FORMAT_R8G8B8A8_UNORM, SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                Usage: D3D11_USAGE_IMMUTABLE, BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32, ..Default::default() };
+            let data = D3D11_SUBRESOURCE_DATA { pSysMem: art.as_raw().as_ptr().cast(), SysMemPitch: art.width()*4, SysMemSlicePitch: 0 };
+            let mut texture = None;
+            if self.device.CreateTexture2D(&desc, Some(&data), Some(&mut texture)).is_ok() {
+                if let Some(texture) = texture {
+                    let mut srv = None;
+                    if self.device.CreateShaderResourceView(&texture, None, Some(&mut srv)).is_ok() {
+                        self.music_art = srv.map(|srv| (track.revision, srv));
+                    }
+                }
+            }
+        }
+        if let Some((_, srv)) = &self.music_art { self.draw_preview(rect, Some(srv)); }
+    }
+
+    pub unsafe fn draw_inventory_icons(&mut self, requests:&[crate::skin_icons::IconRequest]) {
+        if requests.is_empty() {return;}
+        let cache=self.icons.get_or_insert_with(crate::skin_icons::IconCache::new);
+        for icon in requests {cache.request((icon.definition,icon.paint));}
+        cache.update(&self.device);
+        for icon in requests {
+            let texture=self.icons.as_mut().and_then(|cache|cache.texture((icon.definition,icon.paint)));
+            if let Some((srv,width,height))=texture {
+                if let Some(rect)=crate::skin_icons::fit(icon.rect,width,height) {self.draw_preview(rect,Some(&srv));}
+            }
+        }
     }
 
     pub unsafe fn recreate(&mut self, swapchain: &IDXGISwapChain) {
@@ -314,6 +363,23 @@ impl Dx11 {
                 self.height = height;
             }
         }
+    }
+
+    pub unsafe fn apply_postprocess(
+        &self,
+        swap_chain: *mut core::ffi::c_void,
+        cfg: &wallbang_config::settings::PostProcessSettings,
+    ) {
+        if swap_chain.is_null() {
+            return;
+        }
+        let Some(sc) = <IDXGISwapChain as windows::core::Interface>::from_raw_borrowed(&swap_chain) else {
+            return;
+        };
+        let Ok(backbuffer) = sc.GetBuffer::<ID3D11Texture2D>(0) else {
+            return;
+        };
+        crate::postprocess::apply(&self.device, &self.context, &backbuffer, &self.rtv, cfg);
     }
 
     pub unsafe fn draw(&self, vertices: &[Vertex]) {
@@ -506,6 +572,24 @@ impl Dx11 {
         p.ready
     }
 
+    /// Own DX11 geometry into an owned RTV; no backbuffer capture or game scene.
+    pub unsafe fn render_weapon(&mut self, request: &crate::skin_inspect::Request) -> Option<ID3D11ShaderResourceView> {
+        let start=Instant::now();
+        if self.weapon.is_none() && !self.weapon_initialization_failed {
+            self.weapon=crate::model::inspect::WeaponRenderer::new(&self.device);
+            self.weapon_initialization_failed=self.weapon.is_none();
+        }
+        if self.weapon_initialization_failed {
+            crate::skin_inspect::report_error("DX11 preview initialization failed".into());
+        }
+        let result=self.weapon.as_mut().and_then(|renderer|renderer.render(&self.device,&self.context,request));
+        // The owned pass must never leave its render target bound in the game.
+        self.context.OMSetRenderTargets(Some(&[Some(self.rtv.clone())]), None::<&ID3D11DepthStencilView>);
+        self.context.RSSetViewports(Some(&[D3D11_VIEWPORT {TopLeftX:0.0,TopLeftY:0.0,Width:self.width as f32,Height:self.height as f32,MinDepth:0.0,MaxDepth:1.0}]));
+        crate::skin_inspect::profile(start);
+        result
+    }
+
     /// Owned-model pass into the offscreen target. Returns its SRV for the preview window.
     pub unsafe fn render_model(
         &mut self,
@@ -556,6 +640,12 @@ impl Dx11 {
         rect: (f32, f32, f32, f32),
         override_srv: Option<&ID3D11ShaderResourceView>,
     ) {
+        self.draw_preview_impl(rect,override_srv,false);
+    }
+    pub unsafe fn draw_weapon_preview(&self,rect:(f32,f32,f32,f32),srv:&ID3D11ShaderResourceView) {
+        self.draw_preview_impl(rect,Some(srv),true);
+    }
+    unsafe fn draw_preview_impl(&self,rect:(f32,f32,f32,f32),override_srv:Option<&ID3D11ShaderResourceView>,premultiplied:bool) {
         let (srv, pw, ph) = if let Some(srv) = override_srv {
             (srv.clone(), rect.2.max(1.0), rect.3.max(1.0))
         } else {
@@ -595,7 +685,7 @@ impl Dx11 {
         let targets = [Some(self.rtv.clone())];
         self.context.OMSetRenderTargets(Some(&targets), None::<&ID3D11DepthStencilView>);
         self.context.OMSetDepthStencilState(&self.depth_stencil, 0);
-        self.context.OMSetBlendState(&self.blend, Some(&[0.0; 4]), u32::MAX);
+        self.context.OMSetBlendState(if premultiplied {&self.premultiplied_blend} else {&self.blend}, Some(&[0.0; 4]), u32::MAX);
         self.context.RSSetState(&self.rasterizer);
         let viewport = D3D11_VIEWPORT {
             TopLeftX: 0.0,

@@ -1,0 +1,9 @@
+[workspace]
+[package]
+name = "wallbang_weaponpack"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+gltf = { version = "1", features = ["import"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+serde_json = "1"

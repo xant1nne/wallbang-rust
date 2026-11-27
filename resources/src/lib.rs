@@ -1,5 +1,4 @@
-// Config block: all built-in resources are generated here in Rust; no external binary assets
-// (no TTF, no PNG) and no third-party crates are needed — only std.
+// Config block: generated UI data and pre-imported inventory PNGs are embedded.
 
 //! Embedded, dependency-free resources for the wallbang project.
 //!
@@ -7,6 +6,10 @@
 //! helpers that expand glyphs to RGBA pixels for a D3D11 texture atlas, a few shared
 //! name tables and a default configuration JSON. Everything is `const` or generated
 //! at runtime from `const` data, so nothing has to be loaded from disk.
+
+pub mod skin_icons;
+pub mod weapon_models;
+pub mod weapon_finishes;
 
 /// Width of a single glyph in pixels.
 pub const GLYPH_W: usize = 5;

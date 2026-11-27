@@ -4,7 +4,7 @@
 // MAX_DATABASE_DEPTH = 16
 // MAX_DATABASE_BYTES = 16 * 1024 * 1024
 
-use std::collections::HashMap;
+use wallbang_config::collections::HashMap;
 
 use mlua::RegistryKey;
 use parking_lot::RwLock;
@@ -28,7 +28,7 @@ pub struct EventBus {
 impl EventBus {
     pub fn new() -> Self {
         Self {
-            callbacks: RwLock::new(HashMap::new()),
+            callbacks: RwLock::new(HashMap::default()),
         }
     }
 

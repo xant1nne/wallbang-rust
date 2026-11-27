@@ -5,6 +5,13 @@ use wallbang_render::draw::{DrawList, Vertex};
 use wallbang_render::font::atlas_rgba;
 use wallbang_render::menu::Menu;
 
+#[test]
+fn render_updated_panels_for_visual_review() {
+    // Layout-only rasterization. The actual owned DX11 inspect is verified by
+    // render/examples/weapon_scene.rs on a real D3D11 device.
+    main();
+}
+
 fn rasterize(
     verts: &[Vertex],
     atlas: &[u8],
@@ -175,7 +182,18 @@ fn render_one(
     menu.render_preview_frame(&mut dl, state, w as f32, h as f32, tab, subtab);
     dl.begin(w as f32, h as f32);
     menu.render_preview_frame(&mut dl, state, w as f32, h as f32, tab, subtab);
-    let fb = rasterize(dl.vertices(), atlas, aw, ah, w, h, [7, 8, 10, 255]);
+    let mut fb = rasterize(dl.vertices(), atlas, aw, ah, w, h, [7, 8, 10, 255]);
+    for icon in dl.inventory_icons() {
+        let Some(source)=wallbang_render::skin_icons::decode_embedded(icon.definition,icon.paint) else {continue;};
+        let Some(rect)=wallbang_render::skin_icons::fit(icon.rect,source.width(),source.height()) else {continue;};
+        let resized=image::imageops::resize(&source,rect.2.round().max(1.0) as u32,rect.3.round().max(1.0) as u32,image::imageops::FilterType::Lanczos3);
+        for (px,py,pixel) in resized.enumerate_pixels() {
+            let (dx,dy)=(rect.0.round() as i32+px as i32,rect.1.round() as i32+py as i32);
+            if dx<0||dy<0||dx>=w as i32||dy>=h as i32 {continue;}
+            let index=(dy as usize*w+dx as usize)*4;let alpha=pixel[3] as f32/255.0;
+            for channel in 0..3 {fb[index+channel]=(pixel[channel] as f32*alpha+fb[index+channel] as f32*(1.0-alpha)).round() as u8;}
+        }
+    }
     save_png(path, w as u32, h as u32, &fb);
     println!("Saved {} ({} verts)", path, dl.len());
 }
@@ -270,7 +288,15 @@ fn main() {
         0,
         r"C:\wallbang-rust\target\tmp\menu_preview_skins.png",
     );
+    for (subtab, name) in [(1, "knives"), (2, "gloves"), (3, "agents")] {
+        render_one(&mut menu, &state, atlas, aw, ah, 1320, 750, 4, subtab,
+            &format!(r"C:\wallbang-rust\target\tmp\menu_preview_{name}.png"));
+    }
     // Visuals / World tabs (layout regression checks)
+    state.settings_mut().ui.skins_browsing = Some(38);
+    render_one(&mut menu, &state, atlas, aw, ah, 1320, 750, 4, 0,
+        r"C:\wallbang-rust\target\tmp\menu_preview_skin_inspect.png");
+    state.settings_mut().ui.skins_browsing = None;
     for (subtab, path) in [
         (0, r"C:\wallbang-rust\target\tmp\menu_preview_world_items.png"),
         (1, r"C:\wallbang-rust\target\tmp\menu_preview_world_scene.png"),

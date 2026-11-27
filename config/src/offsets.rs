@@ -1,4 +1,4 @@
-// Config block: офсеты из C:\Users\dmitr\Downloads\output (cs2-dumper, 2026-11-24 20:32 UTC).
+// Config block: офсеты из C:\Users\dmitr\Downloads\output (cs2-dumper, build 14201, 2026-11-24).
 // Единственный не-schema офсет — MODEL_STATE_BONE_ARRAY (IDA, client.dll).
 
 /// Адрес client.dll получаем через GetModuleHandleA в рантайме.
@@ -79,6 +79,8 @@ pub const PAWN_ABS_ORIGIN: usize = 0xC8;
 pub const PAWN_SCENE_NODE: usize = 0x330;
 // C_BasePlayerPawn::m_pWeaponServices / CPlayer_WeaponServices::m_hActiveWeapon.
 pub const PAWN_WEAPON_SERVICES: usize = 0x12F0;
+pub const PAWN_OBSERVER_SERVICES: usize = 0x1308;
+pub const OBSERVER_TARGET: usize = 0x4C;
 pub const WEAPON_SERVICE_ACTIVE: usize = 0x60;
 // CPlayer_WeaponServices::m_hMyWeapons (C_NetworkUtlVectorBase<CHandle>).
 pub const WEAPON_SERVICES_WEAPONS: usize = 0x48;
@@ -99,6 +101,36 @@ pub const MONEY_ACCOUNT: usize = 0x40;
 // C_BasePlayerWeapon::m_iClip1 and C_EconEntity::m_AttributeManager::m_Item::m_iItemDefinitionIndex.
 pub const WEAPON_CLIP1: usize = 0x1928;
 pub const WEAPON_DEF_INDEX: usize = 0x1290 + 0x50 + 0x1BA;
+// Econ schema descriptors read offline from wb_ida/newclient/client.dll, 26.11.2026.
+pub const ECON_ITEM: usize = 0x1290 + 0x50;
+pub const ECON_ATTRIBUTES_INITIALIZED: usize = 0x1288;
+pub const ECON_OWNER_XUID: usize = 0x18A0;
+pub const ECON_FALLBACK_PAINT: usize = 0x18A8;
+pub const ECON_FALLBACK_SEED: usize = 0x18AC;
+pub const ECON_FALLBACK_WEAR: usize = 0x18B0;
+pub const ECON_FALLBACK_STATTRAK: usize = 0x18B4;
+pub const ITEM_RESTORE_MATERIAL: usize = 0x1B8;
+pub const ITEM_DEFINITION: usize = 0x1BA;
+pub const ITEM_QUALITY: usize = 0x1BC;
+pub const ITEM_ID_HIGH: usize = 0x1D0;
+pub const ITEM_ID_LOW: usize = 0x1D4;
+pub const ITEM_INITIALIZED: usize = 0x1E8;
+pub const ITEM_ATTRIBUTE_VECTOR: usize = 0x208 + 0x08;
+pub const ITEM_CUSTOM_NAME: usize = 0x2F8;
+pub const ITEM_INITIALIZED_TAGS: usize = 0x5A8;
+pub const PAWN_ECON_GLOVES: usize = 0x17A0;
+pub const PAWN_REAPPLY_GLOVES: usize = 0x179D;
+pub const PAWN_HUD_ARMS: usize = 0x1DD8;
+pub const ENTITY_IDENTITY: usize = 0x10;
+pub const IDENTITY_HANDLE: usize = 0x10;
+pub const IDENTITY_FLAGS: usize = 0x30;
+pub const ENTITY_OWNER_HANDLE: usize = 0x520;
+pub const ENTITY_SUBCLASS: usize = 0x380;
+pub const SCENE_CHILD: usize = 0x40;
+pub const SCENE_SIBLING: usize = 0x48;
+pub const SCENE_OWNER: usize = 0x30;
+pub const MODEL_STATE_NAME: usize = 0xA8;
+pub const MODEL_STATE_MESH_MASK: usize = 0x208;
 // C_BaseEntity::m_nSubclassID + 0x8 points at weapon vdata.
 pub const WEAPON_VDATA: usize = 0x380 + 0x8;
 // CCSWeaponBaseVData::m_iMaxClip1 (the weapon name string lives at +0x720).
@@ -110,6 +142,7 @@ pub const SCENE_NODE_MODEL_STATE: usize = 0x140;
 pub const MODEL_STATE_BONE_ARRAY: usize = 0x80;
 // CCSPlayerController::m_sSanitizedPlayerName 0x878 (CUtlString: ptr, len).
 pub const CONTROLLER_PLAYER_NAME: usize = 0x878;
+pub const CONTROLLER_PING: usize = 0x838;
 // C_BasePlayerPawn::m_hController (CHandle<CBasePlayerController>), cs2-dumper 2026-11-24.
 pub const PAWN_CONTROLLER_HANDLE: usize = 0x14BC;
 pub const ENGINE_BUILD_NUMBER: usize = 0x6B2D1C;
@@ -131,6 +164,7 @@ pub const fn build_matches(actual: u32) -> bool {
 // на локальном client.dll: сигнатура уникальна (RVA 0x178C140).
 /// CUserCmd::csgoUserCmd.pBaseCmd.
 pub const CMD_BASE_CMD: usize = 0x40;
+pub const CMD_COMMAND_NUMBER: usize = 0x08;
 /// CUserCmd::nButtons (CInButtonState) — vtable в +0x0.
 pub const CMD_BUTTONS: usize = 0x58;
 /// CInButtonState::nValue.
@@ -140,10 +174,18 @@ pub const CMD_HISTORY_COUNT: usize = 0x30;
 /// CUserCmd::csgoUserCmd.inputHistoryField.pRep (Rep_t: int + T*[]).
 pub const CMD_HISTORY_REP: usize = 0x38;
 /// CUserCmd::csgoUserCmd.nHasBits.
-pub const CMD_HAS_BITS: usize = 0x18;
+pub const CMD_HAS_BITS: usize = 0x20;
 
 /// CBaseUserCmdPB::nHasBits.
-pub const BASE_HAS_BITS: usize = 0x08;
+pub const BASE_HAS_BITS: usize = 0x10;
+pub const BASE_SUBTICK_FIELD: usize = 0x18;
+pub const REPEATED_COUNT: usize = 0x08;
+pub const REPEATED_REP: usize = 0x10;
+pub const REPEATED_ELEMENTS: usize = 0x08;
+pub const SUBTICK_BUTTON: usize = 0x18;
+pub const SUBTICK_PRESSED: usize = 0x20;
+pub const SUBTICK_WHEN: usize = 0x24;
+pub const SUBTICK_MESSAGE_SIZE: usize = 0x38;
 /// CBaseUserCmdPB::pInButtonState.
 pub const BASE_BUTTON_STATE: usize = 0x38;
 /// CBaseUserCmdPB::pViewAngles (CMsgQAngle: CBasePB 0x18 + QAngle).
@@ -157,9 +199,9 @@ pub const BASE_MOUSE_DX: usize = 0x68;
 pub const BASE_MOUSE_DY: usize = 0x6C;
 
 /// CBasePB::nHasBits (для CInButtonStatePB и CMsgQAngle).
-pub const PB_HAS_BITS: usize = 0x08;
-/// CBasePB::nCachedBits — именно его proto-сериализатор считает «has bits».
-pub const PB_CACHED_BITS: usize = 0x0C;
+pub const PB_HAS_BITS: usize = 0x10;
+/// Protobuf cached serialized byte size (u32), not a second has-bits mask.
+pub const PB_CACHED_BITS: usize = 0x14;
 /// CInButtonStatePB::nValue.
 pub const PB_BUTTON_VALUE: usize = 0x18;
 /// CMsgQAngle::angValue (QAngle).

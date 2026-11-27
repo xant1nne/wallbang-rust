@@ -1,273 +1,392 @@
 Leek
 
----
+# Wallbang Rust — план доведения до проверенной версии
 
-## 1. Текущее состояние
+Обновлено: 27.11.2026. Проект: `C:\wallbang-rust`.
 
-### 1.1 Инфраструктура
+Это основной роадмап проекта. Внешний файл в `.opencode\plan` содержит ссылку сюда. AGENTS.md удалён по решению пользователя; его отдельное требование согласовывать каждую пересборку отменено. Этот документ описывает работу и критерии готовности, а не дополнительные процедуры разрешений.
 
-- Workspace: `config`, `core`, `render`, `feature`, `resources`, `lua`, `loader`, `app`.
-- Target: stable `x86_64-pc-windows-msvc`, static CRT, `/DYNAMICBASE`.
-- Единственный деливерабл: `dist\wallbang.exe` — GUI loader со встроенным `wallbang.dll` через `include_bytes!`.
-- Present hook: `IDXGISwapChain::Present`, vtable slot 8. RTV пересоздаётся только на `ResizeBuffers`.
-- CreateMove: original вызывается первым, дальше `feature::combat::cmd::on_create_move`.
-- AutoMakeUserCmd: сигнатура переведена на 2-аргументную форму; call site подтверждён оффлайн (`SIG_AUTO_MAKE_USER_CMD_CALL`).
-- Loader: добавлен TLS-index fix через удалённый `TlsAlloc` и direct-`jmp` stub для TLS callbacks.
-- Шейдеры только предкомпилированные `.cso`; runtime `D3DCompile` запрещён.
-- Диагностика крашей расширена: `symbol_for()`, `stack:` через `RtlCaptureStackBackTrace`, `rip_sym`, `raw_stack_trace()`, расширенный список модулей.
-- `graphify update .` после правок выполнялся; `graphify-out/` ожидаемо грязный.
+## ПЕРВЫЙ ПРИОРИТЕТ — P0: FPS, отзывчивость меню и неработающие функции
 
-### 1.2 Конфиг и UI
+### Актуальная точка отсчёта: FPS 20–60, World Visuals, Spotify — 27.11.2026
 
-- Профили — JSON под `%LOCALAPPDATA%\wallbang\configs`, активный `default`.
-- Активные панели: `draw_esp_real`, `draw_visuals_real`, `draw_unavailable`, `draw_misc_real`. Старые C++-порты помечены `#[allow(dead_code)]` и не вызываются.
-- Visuals-панель показывает только контролы с реальным backend'ом: fire area, world color, remove 3D skybox, remove skybox fog, lighting, fog, bloom, gamma, DOF, rain, smoke.
-- World material, skybox color/cloud/sun, snow/stars, wetness/wind, projectile/landing indicators в UI **не выведены**: подтверждённого backend'а нет.
-- `ragebot.silent` убран из UI.
-- ESP preview: вкладка Players, floating panel, own skinned agent render по умолчанию; Panorama-мост disposed, пока панель открыта.
-- Menu mouse: пока меню открыто, `hk_wndproc` глотает `WM_INPUT` и `0x0200..0x0210`; `ClipCursor` снимается, системный курсор показывается.
+Эта запись и таблица раздела 2 имеют приоритет над историческими отчётами ниже. Успешная компиляция или установка hook не означает исправление функции в CS2. P0 не закрыт.
 
-### 1.3 C3 / backend'ы
+#### Проверенные пользователем референсы — уточнение 27.11.2026
 
-- `feature/src/cvar.rs` создан и подключён:
-  - `engine2.dll!CreateInterface("VEngineCvar007")`;
-  - поиск по массиву_CONVAR + schema-полям;
-  - чтение/запись bool/int16/uint16/int32/uint32/int64/uint64/float32/float64;
-  - сложные типы (string/color/vector) отклоняются;
-  - каждая запись идёт через `MutationGuard`;
-  - исходные 64 бита запоминаются и восстанавливаются при выключении/финале.
-- Подтверждённый layout ConVar для этой сборки: имя `+0x00`, тип `+0x28`, флаги `+0x30`, типизированные значения `+0x58`. Старый вариант `+0x40` как массив значений **не использовать**.
-- Таблица типов подтверждена: `0 bool`, `1 int16`, `2 uint16`, `3 int32`, `4 uint32`, `5 int64`, `6 uint64`, `7 float32`, `8 float64`, `9+` complex.
-- `feature/src/c3.rs` создан и вызывается из `on_frame`: lighting, fog override, rain particles, bloom, gamma, DOF, smoke reduction.
-- `feature/src/world.rs` создан: guarded world color через branch-safe VTableHook, remove 3D skybox, remove skybox fog через CallHook, read-only fire area overlay.
-- Подтверждённые cvars: `r_drawskybox`, `r_draw3dskybox`, `sv_skyname`, `r_directlighting`, `r_indirectlighting`, `r_rendersun`, `fog_override_*`, `r_csgo_render_post_bloom_strength`, `r_fullscreen_gamma`, `dof_*`, `r_RainParticleDensity`, smoke/inferno-cvar'ы, `r_csgo_render_post_colorcorrection`, `r_csgo_render_post_local_contrast`, `r_csgo_render_post_film_grain`, `r_csgo_enable_tonemapping`, `r_csgo_postprocess_enable`.
-- Snow/stars, wetness/wind, world material и projectile indicators не имеют подтверждённого backend'а.
+- `C:\Users\dmitr\Downloads\neverlose`: пользователь лично играл с этим читом и подтверждает отличную, по его оценке «идеальную», оптимизацию. Использовать как практический ориентир производительности и архитектуры цветокора; это свидетельство реального игрового использования, а не только вывод по исходникам. Численные FPS/frametime для сравнительного стенда пока не записаны; отсутствие этих чисел не отменяет пользовательского подтверждения.
+- `C:\Users\dmitr\Downloads\wallbang-main`: старый C++-проект пользователя. По его подтверждению, World Visuals точно работали два дня назад, то есть 25.11.2026. Это приоритетный локальный референс для восстановления World Visuals в Rust. Работоспособность на сегодняшний билд и содержимое текущей папки отдельно ещё не проверены.
+- Следующий разбор World начинать с реализации в `wallbang-main`: найти реально использованные hooks, сигнатуры, ABI, момент применения и восстановления параметров; сопоставить с текущим Rust и установленными DLL. Для стоимости цветокора сравнить путь с `neverlose`. Не заменять рабочую архитектуру догадками по названию функции; переносить адреса только после сверки текущего билда.
 
-### 1.4 Проверки, которые уже проходили
+| Блок | Доказательство | Статус и ближайшее действие |
+| --- | --- | --- |
+| FPS | Пользователь сообщил средние 20–60 FPS. В свежем логе CPU hook обычно 0.16–2.03 мс; один интервал 8.924 мс. GPU в том запуске не измерялся | **Открыто.** Повторить одну сцену с PP/blur выключенными и включёнными; сопоставить FPS/frametime и новый `postprocess GPU` |
+| World lighting/tint | `world hooks: color=ok`, но `scene_hits=0`, `last_tinted=0` на протяжении игрового прогона | **Не работает в проверенном сценарии.** Найти исполняемый путь для статического освещения Mirage; текущий light call-site не считать рабочим backend |
+| Fog/skybox | Счётчики hooks растут, `allow_writes=true`; пользователь не видит результата | **Игровой эффект не подтверждён.** Проверить фактические параметры до/после shader setters и viewport/material pass; не закрывать по счётчику вызовов |
+| Movement | Старая сигнатура находила `178C140`, а слот 5 указывал на `B60580`. После замены: `calls=19469 captured=19467 changed=40 allow_writes=true` | **Callback и изменение памяти подтверждены логом.** Игровое действие каждой функции и момент сериализации ещё требуют отдельного прогона |
+| Spotify | SMTC вернула реальный трек, playing, timeline и обложку; на пользовательском кадре название рисуется `????` | **Получение данных проверено; отображение в предыдущем EXE сломано.** Unicode-фикс и новый стиль подготовлены, требуется проверить новый EXE |
+| ESP/loadout preview | Пользователь сообщил плохое качество. Отдельные GPU PNG показывают слишком тёмных агентов | **Офлайн доработано, в игре не принято.** Проверить свет, края, кадрирование, выбранную команду, ESP-подписи и стоимость открытого preview |
 
-- `cargo check --workspace` — зелёный.
-- `cargo test --workspace` с `TMP`/`TEMP = C:\wallbang-rust\target\tmp` — зелёный, включая тесты cvar encoding.
-- `cargo run -p wallbang_render --example preview` — PNG в `target\tmp` перегенерированы.
-- Оффлайн sigscan подтвердил уникальные совпадения для CreateMove, AutoMakeUserCmd, SetupFog, scene-system слотов и world-material паттерна.
-- SHA256 установленного `client.dll` совпадал с копией, использованной для оффлайн-разбора.
+#### Что изменено в текущей итерации исходников
 
----
+- `CreateMove`: уникальная сигнатура `B60580` сверена дизассемблированием; внутри подтверждён call `AutoMakeUserCmd` по `B60637`. AutoMakeUserCmd захватывает адрес, feature-код вызывается после оригинального CreateMove. В логе есть отдельные счётчики calls/captured/changed.
+- `World`: удалён ошибочный обход CA0/CA8 как встроенного массива tint-объектов. CA8 — указатель; aggregate `+30` в этом билде тоже указатель, а не индекс light-buffer. Подключённый альтернативный scene-light путь пока не вызывается в проверенной карте. Fog и skybox setters присутствуют в коде, но их визуальное действие не доказано. Сверенные адреса: `tools/verified_build14201.json`.
+- `Motion blur`: D3D11 camera-direction/radial screen-space blur, до наших HUD/menu. Текущий фикс сокращает выборки 13 → 9, пропускает blur при нулевом векторе и целиком пропускает проход при выключенном PP и неактивном blur. Это не motion-vector/depth blur и не отдельное размытие viewmodel.
+- `GPU-диагностика`: кольцо timestamp/disjoint queries, чтение с DONOTFLUSH без ожидания GPU. Новый лог `postprocess GPU: mean=...ms peak=...ms`; реального игрового результата этой версии ещё нет.
+- `c3`: частота sync ограничена 250 мс. В предыдущем логе повторные строки писались десятки раз/сек с файловым flush; это устранённый лишний расход, но не доказанная единственная причина низкого FPS.
+- `Spotify/UI font`: ASCII-only побайтовый рендер заменён на обход Unicode-символов. Атлас расширен кириллицей, украинскими буквами, Latin supplement и пунктуацией. Тест проверяет реальные растеризованные глифы. Карточка использует общий HUD accent, тёмную геометрию, графические transport-кнопки и корректное усечение названия.
+- `Preview`: студийная подложка, более читаемый фронтальный свет, 2x supersampling; статическая поза использует cached SRV вместо повторного рендера 20 раз/сек. Enemy/Allies выбирают соответствующую модель/ESP-конфигурацию. Исправлено наложение плавающего preview на меню при наличии места на экране. Это улучшение текущих GLB, не новая модель и не полноценный PBR renderer.
+- `allow_writes`: **по прямому последнему указанию пользователя всегда true**, переключатели удалены из меню; старые профили с false нормализуются при запуске/кадре. Feature toggles, build guard и capability API остаются. Исторические пункты о старте записей выключенными больше не описывают текущую политику.
+- `Clantag`: реализован анимированный префикс имени через engine command с rate-limit и попыткой восстановления в game-thread stage. Это **не Steam-group clan tag**; принятие команд игрой и восстановление ещё не подтверждены.
+- `Vote Revealer`: перехват FireEventClientSide и обработка vote_cast/vote_started в коде; hook установился в runtime-логе. Реальные строки голосования в игровом прогоне ещё не проверены.
 
-## 2. Точка остановки
+#### Проверки и поставка
 
-Работа остановлена посреди добавления **NVIDIA-style color correction как реальной пост-обработки**.
+- Прошли 24 render unit-теста, включая Unicode rasterization; после выбора Enemy/Allies повторно прошли 3 panel-теста. `cargo check -p wallbang` и компиляция обоих изменённых HLSL прошли.
+- `render/examples/agent_scene.rs` использует настоящий D3D11 WARP и текущий ModelRenderer; PNG находятся в `target/tmp/agent-scene/`. `render/examples/preview.rs` сформировал layout PNG в `target/tmp/`. Ни один из этих стендов не доказывает игровой FPS.
+- Финальная release-сборка завершена: `dist/wallbang.dll` и `dist/wallbang.exe`; EXE скопирован в `C:\Users\dmitr\OneDrive\Desktop\wallbang.exe`. Размер EXE 546278912 байт, SHA256 `538CC1C38C1ABF0A38BC230A3ED46455AF011EEA9C95266747E362D3C2AF3D58`. Метка `unicode-hud-gpu-profile-v1` должна появиться после запуска новой DLL; обновление файла на диске не заменяет payload уже запущенной игры. Новый игровой прогон и GPU-замер ещё не выполнены.
+- Очерёдность: закончить доставку точного EXE → проверить Spotify/Unicode и новый GPU timing → локализовать FPS по baseline → исправить World по реально вызываемому пути → проверить movement по одной функции. Добавление новых эффектов не закрывает эти пункты.
 
-Что уже сделано в этой ветке:
+### Диагностика OpenProcess (5) — 27.11.2026
 
-- `feature/src/cvar.rs` — новый backend, подключён в `app/src/lib.rs` (init/on_frame/shutdown).
-- `feature/src/c3.rs` — новый файл, подключён в `on_frame`.
-- `config/src/settings.rs` — добавлены поля `fog_end`, `weather_density`, `bloom`, `bloom_strength`, `gamma`, `gamma_value`, `dof`, `dof_near_blurry`, `dof_far_blurry`, `smoke_removal`.
-- `render/src/menu.rs` — Visuals-панель расширена реальными контролами; вызов `draw_visuals_real` теперь получает `state`.
-- `graphify update .` выполнен.
+- Пользователь показал отказ OpenProcess для найденной CS2 PID 5380. Живая read-only проверка из текущей оболочки разрешила все запрошенные права отдельно и вместе (`0x43A`); CS2 и оболочка без повышения прав, CS2 с `-insecure`. Это не доказывает доступ из GUI: причиной пока нельзя объявлять UAC или защиту игры.
+- При ошибке GUI сохраняет полный отчёт `wallbang-loader.log` рядом с EXE (резерв — `%TEMP%`): код/текст Win32, маска прав, PID загрузчика, elevation загрузчика/CS2 и путь игры. Никакого повышения прав, изменения защиты или обхода отказа не добавлено. Причина требует повторного LOAD именно из GUI и его отчёта.
 
-Что **ещё не создано** и является следующим шагом:
+### Текущий блок: применение скинов и стоимость backend — 27.11.2026
 
-- `render/src/shaders/color_vs.hlsl`, `color_ps.hlsl` и скомпилированные `.cso`.
-- Структура настроек color correction и её поля в `AmbienceSettings`.
-- Двухколоночная UI-секция Color correction.
-- Вызов полноэкранного post-pass из `hk_present`.
-- Тайминг `grade_us` в логе профиля.
+- После DX11-переноса пользователь подтвердил улучшение вида inspect, но лаги и отсутствие покрытия на оружии сохранились. Slaughter на присланном скриншоте относится к процедурным покрытиям, не реализованным в текущем preview; это отдельный незакрытый пункт после применения к игровому оружию.
+- По установленному client.dll проверена штатная цепочка материалов: бывшая `SIG_APPLY_ECON` указывает на OnDataChanged (`0x821070`), а сборщик — `0x7FEF20`. Добавлены уникальные сигнатуры сборщика и его material-context predicate (`0xDADAD0`). `tools/check_skin_backend.mjs` воспроизводит проверку сигнатур/RTTI и пишет `target/tmp/skin-backend-native.json`.
+- Backend теперь очищает CCompositeMaterialOwner и вызывает штатный builder с item-view оружия как для world weapon, так и для HUD; ABI из native global-refresh проверен, пятый аргумент допускает null. Искусственный вызов OnDataChanged удалён из цепочки применения.
+- Восемь последовательных пересборок заменены событиями настройки/нового HUD/явного Apply. Повторные тяжёлые попытки ограничены 250 мс; перезаписанные econ-поля восстанавливаются сразу, отдельно от тяжёлой пересборки. Apply увеличивает runtime revision в одной транзакции с настройками; revision не сохраняется в профиль.
+- Валидация отличает opaque handles массива `4B8/4C0` от разыменовываемых refcounted pointers `4A0/4A8`; обход ограничен 256 элементами. В owner-потоке раз в 5 с пишется `skin profile`: mean/max stage, rebuilds, field resets, def/paint, счётчики материалов до/после и время последнего вызова. UI явно сообщает `Fields written; render unverified`.
+- 65 workspace-тестов backend/существующего проекта прошли до доработки загрузчика. Игровой эффект и FPS ещё не подтверждены: запуск GUI остановился на предупреждении неизвестного издателя Windows, ручной шаг остаётся необходимым.
 
-Решение по реализации уже принято: полноэкранный D3D11 pass, который копирует backbuffer в owned SRV-текстуру, применяет HLSL-градинг и рисует результат обратно в backbuffer **до** отрисовки меню/оверлея. Никаких game-memory записей для этого не требуется. Pass должен пропускаться, если `enabled == false` или все параметры нейтральны.
+### Загрузчик: подключение к уже открытой CS2 — 27.11.2026
 
----
+- По отдельному указанию пользователя исправлен attach-before-launch: независимый поиск ToolHelp + HWND/PID с проверкой имени exe через query-only handle. Ошибка перечисления/недоступный существующий процесс не трактуется как отсутствие игры; неоднозначные PID дают ошибку.
+- Если CS2 отсутствует, запуск идёт через Steam `-applaunch 730 -insecure`; затем определяется настоящий PID CS2. PID Steam/стартового процесса не используется для ожидания client.dll. Уже работающая CS2 используется без нового запуска. Для mapping запрашиваются только необходимые права вместо PROCESS_ALL_ACCESS; process/snapshot handles закрываются через RAII. Ошибки содержат PID и Win32-код; выход процесса при ожидании модуля обнаруживается.
+- Пять новых regression tests проверяют отсутствие повторного запуска при найденной игре и при ошибке поиска, выбор настоящего PID после запуска и приоритет окна над неполным snapshot. Read-only live smoke `loader/examples/find_existing_cs2.rs` нашёл заранее запущенную локальную CS2: `Ok(Some(5380))`, PID совпал с CIM. Это подтверждение обнаружения процесса, не инжекта.
+- Полный workspace: 70 тестов прошли. Release GUI собран с обновлённым payload; встраивание DLL проверено побайтово. Внутренняя сборка `target/release/wallbang_gui.exe`, SHA256 `0CFAF9539B82FB9B7A08C815FC1F066B2EE2B88F6110BBA508D33F8AD9FC3D82`. dist/Desktop не заменялись. После дополнительного запроса на loader fix ручное подтверждение запуска unsigned GUI в открытом окне Windows ещё не выполнено; применение покрытия и FPS в игре пока не подтверждены.
 
-## 3. Текущие проблемы
+### Предыдущий блок: собственная DX11-сцена inspect — 27.11.2026
 
-1. **Краши после manual-map.**
-   - `0xC0000374` в `ntdll.dll` сразу после `wb_entry: parking remote thread`.
-   - Ранее `0xC0000005` в `scenesystem.dll+0x3C5A0` от старого prologue-huka world color; заменён на branch-safe VTableHook.
-   - Старый лог не содержит полезного stack trace; новые поля `rip_sym`/`raw_stack` ещё не попали ни в один билд.
-   - Нужен новый билд и новый лог, но только после разрешения.
+- После предыдущей оптимизации пользователь сообщил около 7 FPS, задержку закрытия отдельной сцены и показ базового AWP вместо выбранного Asiimov. Предыдущая попытка P0 не закрыла. По прямому указанию пользователя inspect переведён с Panorama на собственный DX11 render target.
+- Из inspect удалены `MapItemPreviewPanel`, запуск JS из FrameStageNotify, heartbeat, marker/readback и копирование игрового backbuffer. Запрос строится текущим кадром меню; закрытие/Back/смена вкладки очищают его до отрисовки модели в том же Present. Живого виджета поверх игрового HUD теперь нет.
+- Добавлены офлайн-импорт `tools/import_weapon_models.mjs`, упаковщик `tools/weaponpack`, встроенные 44 модели / 88 HD/legacy вариантов. Bind pose запекается офлайн; реальные вершины, индексы, UV и базовые текстуры находятся в DLL. Геометрия/текстуры декодируются рабочим потоком, очередь хранит последний запрос; GPU-кэш ограничен четырьмя моделями. Неподвижная сцена повторно использует SRV.
+- Собственный viewport: depth buffer, прозрачная очистка RT, 1.5x supersampling, камера по границам модели, orbit/zoom и студийный свет. Положение модели нормализуется по двум главным осям; это исправляет стартовый вид вдоль ствола и показ ножей ребром. Размер RT ограничен 2048, текстуры импортируются до 1024 с сохранением UV.
+- В упаковщике исключены кобура Dual Berettas и одновременный импорт worldmodel/viewmodel перчаток; берутся подробные viewmodel-перчатки без bare-arm геометрии. Неиспользуемые вершины общих glTF-буферов удаляются перед расчётом границ/загрузкой. Материалы OPAQUE не используют служебный alpha как прозрачность; BLEND-линзы/накладки рисуются отдельным проходом без записи глубины. Финальный SRV компонуется с premultiplied alpha. Повторно прошли проверки всех 88 моделей и восемь GPU-сцен.
+- Отдельно импортированы 329 текстур custom-finish с прямой UV-развёрткой; headless GPU-прогон проверил AWP Asiimov и AK Redline. Это ещё не универсальный composite-material bake CS2: procedural/Doppler, wear/seed и полная физическая модель материалов остаются открытыми. При отсутствии покрытия UI явно пишет `Preview: base finish`. Применение скинов к игровому оружию этой итерацией не исправлялось.
+- Стендовая проверка использует реальный D3D11 WARP-device и тот же renderer: PNG с геометрией, изменение ракурса, кэш неподвижного кадра и видимые цвета Asiimov. Проверка в CS2, сопоставимый FPS/frametime и остальные причины 7 FPS пока не подтверждены; P0 и movement остаются открытыми.
+- Прошли 62 workspace-теста, включая проверку геометрии/границ/текстур всех 88 импортированных вариантов, отказ на повреждённых данных, сохранение материалов прозрачных линз/накладок и очистку запроса при закрытии/смене покрытия. JS-проверка архитектуры подтверждает отсутствие Panorama-scene/backbuffer-capture и наличие всех моделей текущего UI-каталога.
+- Итоговый release/WARP-прогон вне CS2: первый показ с decode/upload/render/readback — AWP 22.9 мс, Asiimov 22.0 мс, AK Redline 28.2 мс, AUG 22.7 мс, SG553 27.5 мс, Butterfly 16.4 мс, перчатки 6.7 мс; смена ракурса 3.5 мс. CPU-путь возврата кэшированного SRV — около 0.09–0.20 мкс. Это результат стенда, не замер FPS/frametime игрового клиента. Снимки находятся в `target/tmp/weapon-scene/`.
+- Собраны release DLL и внутренний `target/release/wallbang_gui.exe`, SHA256 EXE `237AD4DD5A5111D1F37DBB57374C5475E199E1FA86C99757F4A142BD9660A7DE`; встраивание именно новой DLL проверено побайтово. Размер EXE 545967616 байт: ассеты встроены, игра для загрузки preview не читается. dist/Desktop этой итерацией не заменены. Для игрового теста нужен перезапуск CS2 перед LOAD: ранее загруженная DLL сама не заменяется.
 
-2. **Нет билда, соответствующего исходникам.**
-   Последний известный hash `59925A2A...` устарел. Desktop-деливерабл тоже stale. Не делаться без разрешения.
+### Предыдущая попытка: сокращение повторных Panorama setters — 27.11.2026
 
-3. **Cvar backend не проверен вживую.**
-   Layout и типы подтверждены оффлайн, но `find()`, `read_number()` и записи не прогонялись в реальной игре. `allow_writes` стартует выключенным, поэтому при включении любого C3-тoglе нужно следить за restore.
+- Пользователь повторно подтвердил периодические сильные просадки FPS, торможение и неудовлетворительную сцену inspect; movement не работает. P0 остаётся открытым. Сначала выполняется один блок FPS/inspect, затем movement.
+- В `render/src/skin_inspect.rs` устранены повторные native setters при неизменном запросе: прежний цикл 20 раз/сек менял размеры composition surface, фон и поворот. Теперь неподвижный inspect отправляет heartbeat раз в 350 мс без этих setters; изменения позы отправляются не чаще 16 мс и меняют только поворот, изменение zoom/размеров — только layout. Выбор предмета не повторяется при повороте.
+- Прозрачность после асинхронной загрузки карты повторно устанавливается ограниченно: через 0.25/0.75/1.5 с после смены предмета, вместо непрерывного сброса фона. Отложенные вызовы отменяются сменой предмета или удалением сцены. Версия native host повышена до 6.
+- JS regression проверяет отсутствие native setters/layout writes на idle и полном heartbeat, отсутствие resize при повороте, ограниченные background retries и отмену устаревших callbacks; также zoom, parking, migration и disposal. Проверка прошла, 58 workspace-тестов прошли.
+- Release DLL и внутренний тестовый `target/release/wallbang_gui.exe` собраны; побайтово проверено встраивание новой DLL. SHA256 EXE: `1393F594628AF7C52C680283FDD8843D06D0C9988D3BC16A0AAE441D3B2DEA94`. Опубликованные dist/Desktop этой итерацией не заменялись. CS2 при подготовке этой сборки не запущена; игрового сравнения нет.
+- Это исправление подтверждённой лишней работы в коде, а не подтверждение причины всех просадок. Нужен сопоставимый игровой замер FPS/frametime/inspect_tick в одной сцене; художественная переработка inspect и проверка movement ещё не завершены. Повторные material refresh backend и обход entity snapshot остаются кандидатами для последующей проверки.
 
-4. **Недостаток реальных backend'ов.**
-   Нет подтверждённых точек для snow/stars, wetness/wind, world material, skybox color/cloud/sun, projectile/landing indicators. Не добавлять контролы “на будущее”.
+**Игровой отчёт пользователя от 26.11.2026, сборка d58dddd7:** запуск больше не падает, но наблюдается сильная просадка FPS, меню тормозит, вкладки не переключаются; по отчёту пользователя все добавленные функции не работают. Сборка непригодна к нормальному использованию. Отсутствие краша подтверждено только для этого прогона, не для всех сценариев.
 
-5. **Color correction ещё не реализована.**
-   Дизайн есть, файлов нет. Нужно аккуратно встроить в Present, не сломав timing и не создав feedback backbuffer↔SRV.
+**Этот блок выполняется раньше всех пронумерованных этапов ниже. Новые функции и косметическую доводку отложить до закрытия этих регрессий.**
 
-6. **Ограничение по MSAA/формату.**
-   Полноэкранный pass требует `SampleDesc.Count == 1` и совместимого формата backbuffer. При MSAA > 1 pass пропускать, не падать.
+- [ ] Зафиксировать проблемную сборку и текущий профиль. Снять сопоставимые замеры в одной сцене: без payload, с payload при закрытом меню, с открытым меню. Записать FPS/frametime, hook/refresh/ESP/menu/inspect и задержки ожидания locks; не ограничиваться фактом успешного cargo test.
+- [ ] Локализовать источник деградации последовательным отключением подсистем. Проверить contention/ожидание в Present и UI, новые FLS/lock paths, Lua-сигналы, world hooks и preview. Это кандидаты для проверки, а не уже установленные причины.
+- [ ] Восстановить минимальный отзывчивый UI: клики, переключение всех вкладок/подвкладок, scroll, popups, drag, открытие/закрытие. Проверить обработку ввода и синхронизацию настроек отдельно от тяжёлых feature-backends.
+- [ ] Проверить, что выключенные функции действительно не выполняют тяжёлую работу и не меняют игровой рендер. Возвращать подсистемы по одной с повторным замером.
+- [ ] Для каждой добавленной функции составить результат «вход/настройка → callback/backend → наблюдаемый эффект». Отдельно проверить известный AutoMakeUserCmd: call hook install failed; не считать movement подключённым только по найденной сигнатуре.
+- [ ] Перепроверить ESP, movement, skins, inspect, world color и погоду по отдельности. Сейчас их статус — **код есть, по игровому отчёту не работают**; не отмечать готовыми по unit/mock-тестам или офлайн PNG.
 
-7. **Внешние источники недоступны.**
-   Старые дампы/доноры/планы больше не считать существующими. Все сигнатуры и офсеты должны жить в репозитории; новые — добываться через `tools/sigscan` по локально установленной игре.
+**Критерии закрытия P0:** пользователь подтверждает отзывчивое меню и рабочее переключение вкладок; сравнительные замеры показывают устранение сильной деградации; каждая возвращённая функция имеет подтверждённый игровой результат. Непроверенные или неработающие функции остаются отключёнными и явно обозначенными. Исторические 0.2–0.5 мс не подставлять вместо нового измерения.
 
-8. **IDA Python не настроен.**
-   helper-скрипты на Python через shell не запускаются. Не делать это блокирующим: использовать только то, что уже перенесено в код, и встроенный sigscan.
+### Первый проход исправлений — 2026-11-26
 
-9. **graphify-out грязный.**
-   Это ожидаемо после правок. Не коммитить/push; при исчезновении CLI просто оставить граф как есть.
+- Исправлено преобразование координат мыши: desktop → client → backbuffer; вкладки больше не блокируются открытым popup, при смене вкладки сбрасывается подкатегория.
+- Закрытое меню больше не клонирует и не записывает UI-конфиг каждый кадр; удалён второй устаревший commit ESP preview.
+- Исправлена обратная синхронизация movement/radar: изменения контролов не затираются старым UI mirror.
+- Убрано полное клонирование Settings в отключённых world/skins callbacks; кости ESP не читаются при отключённом skeleton.
+- Fire overlay: исправлен путь entity → identity → designer name; поиск распределён по 16 сущностей за кадр, список обновляется раз в 500 мс, позиции кэшируются на 100 мс. Удалена недостоверная надпись времени жизни.
+- cargo check, 41 workspace-тест и JS lifecycle inspect прошли. Реальный FPS и взаимодействие с меню после исправлений ещё не проверены; P0 остаётся открытым. AutoMakeUserCmd и игровая работоспособность остальных функций требуют отдельного исправления/проверки.
+### Повторный отчёт: 3 FPS и пустой inspect — 2026-11-26
 
-10. **Никаких коммитов/push.**
-    Все изменения незакоммичены.
+Предыдущая сборка 3a6fc11d не устранила пользовательский P0. В исходниках найден повторный полный pattern scan client.dll из Panorama::resolve_panel при каждом live_root/run_script. HUD/MainMenu global теперь разрешаются однократно; сами живые указатели продолжают читаться заново. Добавлены отдельные mean/max тайминги inspect_tick, ранее отсутствовавшие в Present-профиле.
 
----
+Visuals теперь действительно разделяет overlay/scene/weather; Misc — movement/game вместо старых неподключённых removals/camera/hud. Событие WM_LBUTTONDOWN сохраняется до следующего кадра, чтобы короткие клики не терялись при просадке FPS. Добавлен тест разных наборов контролов.
 
-## 4. Матрица C3
+Inspect больше не считает факт вызова RunScript доказательством рендера. Захват требует видимого маркера панели: асинхронная проверка одного пикселя с DO_NOT_WAIT, без блокирующего ожидания GPU. Без панели показывается ожидание, а не игровой кадр. Частота отправки JS ограничена 20 Гц. Это исправление ложного превью; появление настоящей модели и материалы ещё не подтверждены. Нужен новый игровой результат после замены exe и перезапуска процесса.
+### Текущий единственный фокус: меню — 2026-11-26
 
-| Функция | Статус | Backend |
-|---|---|---|
-| Fire area | Реализовано, read-only | `feature/src/world.rs`, entity/snapshot |
-| World color | Код есть, branch-safe hook | guarded scene-object tint, restore |
-| Remove 3D skybox | Код есть, source-only | scenesystem VTableHook |
-| Remove skybox fog | Код есть, source-only | client CallHook на `SetupFog` |
-| Lighting | Код есть | cvars `r_directlighting`, `r_indirectlighting`, `r_rendersun` |
-| Fog override | Код есть | `fog_override_enable/max_density/end` |
-| Rain | Код есть | `r_RainParticleDensity` |
-| Bloom | Код есть | `r_csgo_render_post_bloom_strength` |
-| Gamma | Код есть | `r_fullscreen_gamma` |
-| DOF | Код есть | `dof_enabled`, `dof_near_blurry`, `dof_far_blurry` |
-| Smoke reduction | Код есть | smoke cvars |
-| Color correction | **В работе** | планируется собственный D3D11 post-pass + реальные engine cvars |
-| Skybox filename/color | Нет backend'а | только cvars `r_drawskybox`, `sv_skyname`; цвет/облака/солнце — без подтверждённой точки |
-| World material | Нет backend'а | паттерн есть, hook не подключён |
-| Snow/stars | Нет backend'а | в бинарниках не найдено |
-| Wetness/wind | Нет backend'а | в бинарниках не найдено |
-| Projectile/landing indicators | Нет backend'а | требуется read-only entity path |
-| Game chams | Отключено | только own preview-аппроксимация |
+- Переключатели: убрано двойное событие (WndProc + polling), меню использует единственный поток mouse-down из WndProc.
+- Popup: три точки и свитч получили разные области клика; повторный клик закрывает собственный popup.
+- Настройки: один commit в конце отрисовки, после floating ESP preview. Неактивные страницы больше не перезаписывают typed Settings устаревшими UI mirrors. В Misc/Skins/combat прямые typed controls остаются источником состояния.
+- Мышь: освобождение SDL3 relative mode и установка Win32 cursor выполняются сообщением на поток окна, исходный relative mode сохраняется для закрытия. Непроверенный inputsystem vtable не вызывается.
+- cargo check, 44 workspace-теста и офлайн растеризация прошли, включая новые проверки popup/switch и сохранения typed controls.
+- Игровое подтверждение курсора, вкладок, popup и удержания настроек ещё отсутствует. P0 открыт. World, skins и остальные игровые backend в этой итерации не менялись: сначала закрываем меню.
+### Inventory по двум референсам — 2026-11-26
 
----
+- Overview: собственная модель CT/T слева, колонки Pistols/Mid-tier/Rifles справа, прокрутка; каталог оружия расширен до полного стандартного набора, включая SCAR-20. CT/T здесь переключает модель для просмотра, отдельных командных loadout backend нет.
+- Detail: Back, название предмета/скина, native inspect сверху, сетка 5×2 совместимых покрытий снизу, прокрутка, поиск, сортировка по имени/ID. Options сохраняет wear/seed/StatTrak/custom name в черновике. Apply переносит черновик в реальные настройки; просмотр сам по себе экипировку не меняет и allow_writes не включает.
+- Native EconItemImage карточки используют реальные definition/paint IDs; пул ограничен 24 панелями. Inspect map создаётся при открытии предмета, а не при показе overview.
+- ESP preview: больше области под модель, переключатели снизу; inventory-модель не получает ESP-разметку.
+- Проверки: 45 workspace-тестов, JS lifecycle/grid/lazy scene/zoom, offline PNG overview/detail. Настоящие 3D модели и материалы в игре после этой переделки ещё не подтверждены. Наклейки/брелоки, коллекции, командные loadout и применение backend не объявлены реализованными этой UI-итерацией.
+### Backend: проверка 26.11.2026 — ожидается игровой прогон
 
+По установленному client.dll подтверждены RTTI CCompositeMaterialOwner +0x610 и отсутствие C_EconEntity в иерархии HUD. Native regenerate 0x14E8FF0 теперь получает owner, а уведомление slot 11 вызывается через фактический класс. Неподтверждённые слоты 110/195 удалены. Сигнатуры ApplyEcon/Regenerate/SetModel/UpdateSubclass уникальны; econ-поля публичного a2x дампа совпали.
 
-### Фаза B — Color correction (приоритет сейчас)
+Добавлены reset/readback wear/seed/attribute ownership, повторное применение при новом HUD, StatTrak attributes 80/81 и очистка cached name. При отключении записей сохранённая capability используется только для rollback собственных записей на FrameStageNotify; новые apply требуют свежего MutationGuard и включённого allow_writes.
 
-Файлы и шаги:
+Preview: ItemImage large=true по установленному Valve inspect.xml; версия native-host 4 пересоздаёт старые виджеты; прозрачная сцена и тёмная подложка, параметры фона обновляются и при неизменном item ID после асинхронной загрузки.
 
-1. `render/src/shaders/color_vs.hlsl` и `color_ps.hlsl`:
-   - fullscreen triangle/quad через уже существующий `Vertex`;
-   - `cbuffer Grade : register(b0)` с тремя `float4`:
-     - `p0 = brightness, contrast, saturation, hue`;
-     - `p1 = vibrance, temperature, tint, sharpen`;
-     - `p2 = shadows, midtones, highlights, reserved`.
-   - sample из `Texture2D : register(t0)` + `SamplerState : register(s0)`;
-   - hue rotation в YIQ;
-   - vibrance по насыщенности пикселя;
-   - temperature/tint как лёгкий white balance;
-   - shadows/midtones/highlights по luma-весам;
-   - sharpen как unsharp mask по 4 соседям;
-   - `clamp(0,1)` на выходе, альфу сохранить.
-2. Скомпилировать через системный `fxc.exe` из Windows Kits (`/T vs_5_0`, `/T ps_5_0`, `/E main`), положить `.cso` рядом. Runtime-компиляция запрещена.
-3. `config/src/settings.rs`:
-   - новый `#[derive(Clone, Debug, Serialize, Deserialize)] #[serde(default)] pub struct ColorGradeSettings`;
-   - поля: `enabled`, `brightness`, `contrast`, `saturation`, `hue`, `vibrance`, `temperature`, `tint`, `shadows`, `midtones`, `highlights`, `sharpen`;
-   - дефолты: `false`, `0`, `1`, `1`, `0`, `0`, `0`, `0`, `0`, `0`, `0`, `0`;
-   - поле `pub color_grade: ColorGradeSettings` внутри `AmbienceSettings`.
-4. `render/src/dx11.rs`:
-   - `include_bytes!` для новых `.cso`;
-   - owned texture + SRV, пересоздание при размере/формате;
-   - DEFAULT constant buffer, обновление через `UpdateSubresource`;
-   - метод `apply_color_grade(swapchain, &settings)`:
-     - `CopyResource(copy, backbuffer)`;
-     - update cbuffer;
-     - bind RTV/input layout/VS/PS/SRV/sampler/cbuffer;
-     - `Draw(3)`;
-     - unbind SRV;
-     - пропуск при MSAA и при нейтральных параметрах.
-5. `render/src/hooks.rs`:
-   - вызвать pass после построения `DrawList`, до `renderer.draw(list.vertices())`;
-   - завести `GRADE_US` и добавить `grade=Nus` в строку `timing`.
-6. `render/src/menu.rs`:
-   - разделить Visuals на две колонки;
-   - слева оставить текущие реальные контролы, справа — Color correction;
-   - все слайдеры реально влияют на shader;
-   - никаких отключённых/фейковых элементов.
-7. Проверить: `cargo check`, `cargo test` с TMP/TEMP в `target\tmp`, preview PNG.
+49 workspace-тестов, JS lifecycle/grid/migration/background и cargo check прошли. Внутренняя версия target/release собрана для теста. Итоговые dist/Desktop этой итерацией не выпускались. Из процесса инструментов OpenProcess CS2 возвращает Access denied даже для VM_READ; пользователь должен запустить тестовый GUI из своей сессии. Диагностический fallback поиска процессов и временный probe из production source удалены. Тестовый backend_validation.wb пока остаётся; default.wb не заменялся. Полная игровая работоспособность и отсутствие белого фона ещё не подтверждены.
 
-### Фаза C — реальные engine post-cvars
+### AutoMakeUserCmd: исправление установки call hook — 2026-11-26
 
-Подключить только после `cvar::find()` проверки:
+- Причина известной ошибки `call hook install failed`: ручной маппинг payload обычно оказывается дальше 2 GiB от `client.dll`, а пропатченный `call rel32` не может достать до детура. `CallHook::install` теперь при необходимости выделяет исполняемую страницу рядом с call site и ставит короткий `jmp [rip+0]` с абсолютным адресом; адрес и причина ошибки пишутся в лог.
+- В лог захвата добавлены `allow_writes`, состояние runtime-мутаций и флаги movement — по ним можно отделить «хук не встал» от «хук встал, но запись не разрешена».
+- `cargo check --workspace` и 56 workspace-тестов прошли, включая новые проверки rel32/near-stub и текста ошибок.
+- Собрана тестовая `dist/wallbang.exe`, SHA256 `D24E755803A3073EFDD3621AFAA3F33A7EC08A958E20BD59F38E5039EC8B111B`; Desktop этой итерацией не обновлялся.
+- Игровое подтверждение (успешная установка, реальные команды, эффект movement) остаётся открытым и не заменяется тестами.
 
-- `r_csgo_render_post_colorcorrection`;
-- `r_csgo_render_post_local_contrast`;
-- `r_csgo_render_post_film_grain`;
-- `r_csgo_enable_tonemapping`;
-- `r_csgo_postprocess_enable`;
-- `cl_disable_postprocessing` — только если логика инверсии подтверждена.
+### Прогон по P0: устранение ежекадрового cvar-скана — 2026-11-26
 
-Каждый контрол появляется в UI только если `find()` нашёл cvar и тип поддерживается записью. Иначе запись в лог, но не фейковый чекбокс.
+- `feature/src/c3.rs` раньше вызывал `cvar::apply`/`cvar::restore` для 17 ключей на каждом Present-кадре; при включённой группе это был полный поиск по всем cvars движка. Теперь синхронизация происходит только при изменении настроек или гейта записи; добавлен тест на условие.
+- `feature/src/cvar.rs` кэширует адрес cvar по имени и очищает кэш в `init`/`shutdown`, поэтому повторные применения не сканируют массив заново.
+- 57 workspace-тестов и release-сборка прошли; новая тестовая `dist/wallbang.exe`, SHA256 `2D87A6713D8010F3E12CE6CFB1838B7CFE2AAB67EA3B52442659D43FB2D2EFE1`. Desktop не обновлялся.
+- FPS и отзывчивость меню по-прежнему требуют игрового замера; этот пункт закрывает только код-причину, найденную в P0.
 
-### Фаза D — оставшиеся обязательные C3
+### Краш movement: `dwCSGOInput` — объект, а не указатель — 2026-11-26
 
-Для каждой функции:
+- По логу падения `0xC0000005` RIP попал в `wallbang_feature::movement::on_create_move`, в инструкцию записи `mov dword ptr [rbx+258h],0`; `rbx` — результат `modules::csgo_input()`.
+- Причина: `dwCSGOInput` (`client.dll + 0x2574560`) — это сам глобальный объект `CCSGOInput`, его первый qword — vtable в read-only `.rdata`. Код читал qword и получал адрес vtable, после чего movement писал в `.rdata` и получал access violation. Теперь `modules::csgo_input()` возвращает `client + DW_CSGO_INPUT`, а не разыменованный указатель.
+- Дополнительно: `cvar::init` читал 16-битный счётчик `ICvar+0x58` как `u32`, захватывал соседнее поле и отбраковывал backend как «слишком много cvars» — отсюда `cvar backend: 0 cvars`. Исправлено на `u16`; в следующем логе ожидается `cvar backend: N cvars`.
+- 58 workspace-тестов и release-сборка прошли. В лог исключений добавлены `info1` (fault address) и `rbx/rcx/rdx` для следующих разборов. Новая сборка `dist/wallbang.exe` и копия на рабочем столе, SHA256 `4F258CABA1172BDE67F354F8DB838025D267B22A525A78B0B229F21E58672155`.
+- Нужен игровой прогон movement/autostrafe при включённом `allow_writes`; предыдущий краш был именно на записи в `CSGO_INPUT_FORWARD_MOVE`/`LEFT_MOVE`.
 
-1. Найти паттерн/слот через `tools/sigscan` по локально установленной игре.
-2. Зафиксировать константу в `config/src/signatures.rs` или `config/src/offsets.rs` с пометкой источника.
-3. Проверить уникальное совпадение оффлайн.
-4. Сделать hook с fail-closed поведением.
-5. Добавить `MutationGuard` + restore, если нужна запись.
-6. Добавить контрол в UI только после шага 4.
-7. Не переносить код из внешних доноров.
+## 1. Результат, к которому идём
 
-### Фаза E — доставка
+Получить один воспроизводимо собираемый `wallbang.exe` с устойчивым меню, настоящим 3D inspect, проверенными настройками скинов и movement, предсказуемыми визуалами и корректным отключением.
 
-1. `build.bat` только после разрешения.
-2. Hash `dist\wallbang.exe` == hash на Desktop.
-3. Старые варианты удаляются build-скриптом: `wallbang.dll`, `wallbang_gui.exe`, `wallbang_loader.exe`, `*_packed.exe`, `RUN_WALLBANG.bat`.
-4. Новый лог после запуска — обязателен для диагностики.
+Ближайший приоритет — проверить и исправить уже написанное. До прохождения этапов 0–5 не расширять набор игровых функций. Работаем последовательно: один воспроизводимый дефект → исправление → проверка → обновление статуса.
 
-### Фаза F — поддержка
+Проверки поведения проводить в локальной/offline-сессии или на предназначенном для тестов community-сервере. Этот план сам по себе не запускает игру и не меняет настройки аккаунта.
 
-- `cargo check --workspace`.
-- `cargo test --workspace` с `TMP`/`TEMP = C:\wallbang-rust\target\tmp`.
-- `cargo run -p wallbang_render --example preview`.
-- `graphify update .`, если CLI доступен.
-- Никаких коммитов/push без прямого указания.
+## 2. Что есть сейчас и что ещё не доказано
 
----
+| Часть | Подтверждено | Открытый вопрос |
+| --- | --- | --- |
+| Rust workspace, 8 crates | cargo check; последние 24 render-теста и повторные panel-тесты прошли | Игровой acceptance и FPS остаются открытыми; см. актуальный P0 |
+| GUI loader | Код единого exe со встроенным DLL | Совпадает ли доставляемый exe с текущими исходниками |
+| Меню | Две колонки Legitbot/Players/Visuals ESP; Scene/Misc; офлайн PNG | Отзывчивость и полный проход контролов в новой сборке |
+| ESP | Общий draw_target для мира и собственного preview | Актуальный игровой кадр и полный набор игроков |
+| Movement | Runtime: calls/captured растут, changed=40; слот 5 B60580 подтверждён | Игровое поведение, сериализация и конфликты функций |
+| Скины | Econ-путь оружия/ножей/перчаток/агентов в коде | Материалы, HUD, восстановление и время жизни памяти |
+| 3D inspect | Собственный D3D11 renderer, реальные модели/часть finish textures, GPU WARP-сцены | Игровая проверка и procedural finish/wear/seed; Panorama inspect больше не активный путь |
+| Каталог | 1487 kits, 297 записей моделей, 2248 совместимых пар из установленного VPK | Полнота UI-каталога и обновление при смене ресурсов |
+| World/погода | Fog/skybox hooks вызываются; lighting hook имеет ноль вызовов | World Visuals не приняты: отсутствует видимый эффект, нужны рабочий путь и FPS-замеры |
+| Spotify | Живая Windows SMTC-сессия, thumbnail, timeline, transport API | Unicode/style исправлены в исходниках, требуется проверить новый EXE |
+| Motion blur | D3D11 шейдер и управление камерой/скоростью в коде | Стоимость на реальном GPU и качество при повороте/изменении разрешения |
+| Shutdown | Есть остановка и частичное восстановление | Гонки callbacks, timeout, повторная остановка, Lua thread affinity |
 
-## 6. Полезные команды
+Наличие сигнатуры, компиляция, mock-тест и игровой результат — разные уровни подтверждения. Ни один новый игровой путь пока не объявляется полностью готовым.
 
-```powershell
-cargo check --workspace
+## 3. Этап 0 — зафиксировать точку отсчёта
 
-$env:TMP='C:\wallbang-rust\target\tmp'
-$env:TEMP='C:\wallbang-rust\target\tmp'
-cargo test --workspace
+**Приоритет: P0. Статус: следующий шаг.**
 
-cargo run -p wallbang_render --example preview
+- [ ] Сделать датированный снимок исходников, Cargo manifests/lock, build.bat, конфигурации сборки и встроенных ресурсов. Не копировать target и временные файлы. Git сейчас не настроен; не считать его существующим средством отката.
+- [ ] Записать версию toolchain, фактический build CS2 и SHA256 исследуемых client.dll/scenesystem.dll.
+- [ ] Сопоставить применённые offsets/signatures с этим билдом. Отдельно закрыть спор CHUNK_SLOT_SIZE: в коде 0x70, в старых общих инструкциях фигурировало 0x78. Не менять по памяти.
+- [ ] Сохранить текущие результаты cargo check, тестов и JS-проверки в target\tmp вместе с датой и списком проверяемых изменений.
 
-cargo run --manifest-path tools/sigscan/Cargo.toml -- pattern <local_client_or_engine_dll> NAME=PATTERN
+**Готово, когда:** есть точка отката и однозначно известно, для какого бинарника игры проверяются исходники.
 
-graphify update .
-```
+## 4. Этап 1 — жизненный цикл до первого нового запуска
 
-Путь к DLL для sigscan брать из локально установленной игры, не из внешних дампов.
+**Приоритет: P0. Зависит от этапа 0.**
 
----
+- [ ] Разобрать установку и снятие Present, ResizeBuffers, WndProc, CreateMove, AutoMakeUserCmd, FrameStageNotify и world hooks.
+- [ ] Проверить порядок: запрет новых feature-callbacks → завершение активных callbacks → восстановление игрового состояния в нужном потоке → снятие hooks → освобождение ресурсов.
+- [ ] Проверить, что оригинальные функции остаются доступны callbacks до их завершения; не обнулять адрес, пока он может понадобиться.
+- [ ] Разобрать снятие skin overrides: собственные и чужие econ-буферы, уничтожение/повторное использование entity, HUD-модель, agent model, timeout ожидания stage 7.
+- [ ] По текущему указанию allow_writes всегда true; проверить восстановление при выключении отдельных features/shutdown, смене pawn и карты. Не возвращать скрытый UI-переключатель записи без нового запроса пользователя.
+- [ ] Проверить, что Panorama вызывается в UI/game callback, а Lua закрывается с учётом потока, где создан runtime.
+- [ ] Проверить восстановление WndProc, ClipCursor/видимости курсора, D3D11 ресурсов и повторный shutdown.
 
-## 7. Критерии приёмки
+**Готово, когда:** порядок остановки описан и проверен доступными тестами; известные гонки устранены; при timeout нет обращения к уже освобождённой памяти или вызова native API из случайного потока. Окончательная игровая проверка остановки входит в этапы 2 и 8.
 
-- Все обязательные C3-функции либо реализованы с реальным backend'ом, либо явно помечены как “no confirmed backend” без контрола в UI.
-- Color correction работает как полноэкранный post-pass, все слайдеры влияют на результат, pass не ломает меню/ESP-оверлей.
-- `hook` в среднем `0.2–0.5 мс`, `grade` измеряется отдельно.
-- Любая запись в игру требует `allow_writes` и `MutationGuard`, исходные значения восстанавливаются.
-- Новые `Settings`-поля имеют `serde(default)`, старые профили грузятся без миграции.
-- GUI только на английском.
-- КС/loader/build не запускались без разрешения.
-- Коммит/push не делался.
-- Внешние доноры и старые копии не использовались.
+## 5. Этап 2 — воспроизводимая release-сборка и минимальный smoke test
 
----
+**Приоритет: P0. Зависит от этапа 1.**
 
-## 8. Чек-лист для продолжения с другого устройства
+- [ ] Выполнить cargo check --workspace.
+- [ ] Выполнить cargo test --workspace с TMP/TEMP = C:\wallbang-rust\target\tmp.
+- [ ] Выполнить node tools/test_skin_inspect.mjs.
+- [ ] Выполнить cargo test -p wallbang_render --example preview; проверить актуальные PNG вкладок.
+- [ ] Собрать через build.bat: сначала DLL, затем GUI с новым embedded DLL. Проверить единственный dist\wallbang.exe и копию на Desktop по SHA256.
+- [ ] Записать идентификатор проверяемой сборки и время. Старые exe не использовать для выводов о новом коде.
+- [ ] В тестовой сессии сначала оставить все игровые записи и эффекты выключенными. Проверить открытие/закрытие меню, drag, raw mouse, курсор, popups, смену размеров окна.
+- [ ] Выполнить обычное и повторное отключение; проверить отсутствие падения и оставшихся callbacks.
 
-1. Прочитать только этот файл и исходники проекта.
-2. Не искать внешние дампы/доноры/планы.
-3. Проверить `git status --short`: всё должно быть незакоммичено.
-4. Начать с Фазы B (color correction), не трогая КС.
-5. После готовности source-only прогнать check/test/preview.
-6. Спросить разрешение на сборку и запуск/attach.
-7. Получить новый лог и только затем возвращаться к Фазе A.
+**Готово, когда:** новый exe воспроизводимо собирается, базовый UI не падает, управление возвращается игре после закрытия меню и остановки.
+
+## 6. Этап 3 — настоящий 3D inspect как на референсе
+
+**Приоритет: P1. Зависит от этапа 2.**
+
+Сначала закрываем вертикальный путь на одном предмете: **AK-47 + Redline**. Лишь затем проверяем остальные категории.
+
+- [ ] Подтвердить создание MapItemPreviewPanel и фактическую загрузку inspect map/camera.
+- [ ] Подтвердить, что faux item ID соответствует выбранным def/paint, и в кадре действительно нужные модель и материал.
+- [ ] Проверить GPU-copy: источник — текущая engine composition, назначение — нужная область меню; без случайного игрового фона и без кадра от предыдущего предмета.
+- [ ] Проверить drag rotation, пределы pitch, zoom, смену предмета, карточки, dropdown поверх модели и перемещение меню.
+- [ ] Проверить закрытие вкладки/меню, переход HUD ↔ main menu, смену разрешения и повторное открытие. Панель и JS updater должны удаляться без накопления.
+- [ ] Проверить по одному ножу и типу перчаток, затем остальные доступные предметы.
+- [ ] Привести компоновку к референсу: крупная модель, компактный header, читаемые карточки покрытий и доступные настройки без лишней прокрутки.
+- [ ] Зафиксировать отдельно: каталожное покрытие уже выбрано в коде; точные wear/seed в inspect пока отсутствуют. Сначала подтвердить основной рендер, затем исследовать этот путь отдельно.
+
+**Готово, когда:** есть игровой кадр и запись короткого сценария «выбрать оружие → выбрать покрытие → повернуть → приблизить → переключить вкладку → вернуться» без артефактов и роста ресурсов.
+
+**Не входит в этот этап:** editor наклеек/брелоков и новые неподтверждённые engine API.
+
+## 7. Этап 4 — скинченджер, отдельно от inspect
+
+**Приоритет: P1. Зависит от этапа 3.**
+
+| Порядок | Проверка | Критерий |
+| --- | --- | --- |
+| 1 | Одно оружие, один kit | Выбранное покрытие совпадает в мире и руках |
+| 2 | Wear, seed, custom name, локальный StatTrak | Изменения действительно отражаются; неподдерживаемое явно обозначено |
+| 3 | Смена оружия и повторное получение | Настройки применяются к нужному предмету, не к переиспользованному адресу |
+| 4 | Отключение feature | Восстановлены исходные атрибуты/материал; нет повторного применения |
+| 5 | Нож | Согласованы definition, world/HUD model, mesh и восстановление |
+| 6 | Перчатки | Покрытие и модель обновляются после respawn и смены команды |
+| 7 | Агент | Модель корректна; отдельно проверить arms/анимации и возврат исходной модели |
+| 8 | Смена карты / disconnect / shutdown | Нет чужого free, double-free, use-after-free и накопления detached buffers |
+
+- [ ] Не объявлять весь skin changer готовым после успешной смены fallback paint одного оружия.
+- [ ] Сверить полноту выбора предметов с импортированным каталогом; убрать искусственные ограничения старого UI-списка.
+
+**Готово, когда:** каждая поддержанная категория прошла свою строку матрицы. Непрошедшие категории остаются экспериментальными или отключёнными.
+
+## 8. Этап 5 — movement по одной функции
+
+**Приоритет: P0 после FPS/World. Захват команд уже подтверждён runtime-логом, игровое поведение ещё нет.**
+
+- [ ] Сначала проверить фактический command callback и поля protobuf на актуальном билде. Тест массива в памяти не заменяет эту проверку.
+- [ ] Проверить отдельно bhop → autostrafe → mini jump → edgejump → jumpbug; остальные функции на каждом шаге выключены.
+- [ ] Для autostrafe отдельно проверить порядок до bhop, command-number parity и исходный mouse delta.
+- [ ] Для edgejump проверить создание subtick step, when/pressed/button и условия трассы.
+- [ ] Для jumpbug проверить сброс состояния при смерти, отпускании bind, отключении функции и смене pawn.
+- [ ] Проверить binds: empty/always, hold, toggle, смена клавиши, открытое меню.
+- [ ] Затем проверить пары bhop+autostrafe и edgejump+jumpbug на конфликты.
+- [ ] Не расширять movement новыми edgebug/edgestop/ladder-функциями, пока текущие не прошли матрицу.
+
+**Готово, когда:** у каждой функции есть повторяемый тестовый сценарий и наблюдаемый результат; выключение полностью прекращает её воздействие.
+
+## 9. Этап 6 — визуалы, погода и производительность
+
+**Приоритет: P0. Пользователь подтвердил 20–60 FPS и отсутствие результата World Visuals.**
+
+- [ ] Снять baseline в одной и той же сцене: всё выключено, меню закрыто/открыто, inspect закрыт/открыт.
+- [ ] Замерить каждый эффект отдельно и общую комбинацию. Записать hook/refresh/ESP/menu/inspect, frametime и высокие перцентили, а не только среднее FPS.
+- [ ] Проверить tint пресетов Moonlit/Ember/Aurora, сохранение исходного цвета и корректное восстановление после отключения/смены карты.
+- [ ] Проверить снег, дождь, звёзды, светлячки и угольки: плотность, скорость, ветер, teleport/reset, изменение разрешения и крайние значения профиля.
+- [ ] Решить occlusion отдельной задачей: текущие частицы проходят через стены/крыши. До реализации не выдавать их за физическую погоду.
+- [ ] После замеров выбрать ограниченный по стоимости путь скрытия частиц интерьером; не возвращать покадровый CPU-readback или трассу на каждую частицу.
+- [ ] Настроить бюджеты частиц и пресеты по измерениям; отключённые эффекты должны иметь практически нулевую стоимость.
+
+**Готово, когда:** есть сравнительная таблица frametime и подтверждённое восстановление world state. Ориентир старого hook 0.2–0.5 мс — историческая база, а не обещание для новой комбинации эффектов.
+
+## 10. Этап 7 — ESP, профили и UX
+
+**Приоритет: P2. Зависит от этапа 6.**
+
+- [ ] Сверить мировой ESP и preview: box, кости, имена, health/ammo, цвета и позиции подписей.
+- [ ] Проверить полноту списка игроков и кэш имён на текущем билде.
+- [ ] Проверить профили .wb: старый профиль, новый профиль, save/load, невалидные значения, смена профиля с активными эффектами.
+- [ ] Проверить все показываемые контролы: изменение settings должно доходить до backend, не перезаписываться UI mirror на следующем кадре.
+- [ ] Разнести содержимое Scene/Weather и категории Skins по назначению; убрать повторяющиеся или неработающие элементы.
+- [ ] Проверить scroll/dropdown при малом разрешении и масштабировании, подписи, tooltips и контраст.
+
+**Готово, когда:** показанные настройки работают и сохраняются, вкладки соответствуют содержимому, меню не содержит фиктивных данных.
+
+## 11. Этап 8 — длительная проверка и контрольная версия
+
+**Приоритет: P2. Зависит от этапа 7.**
+
+- [ ] Сессия не менее 30 минут с повторным открытием inspect, переключением предметов/эффектов и сменой карты.
+- [ ] Сравнить память и GPU resources в начале и конце; отдельно отследить econ allocations и Panorama panels.
+- [ ] Проверить disconnect, смерть/respawn, смену команды, изменение разрешения и shutdown во время открытого inspect.
+- [ ] Проверить повторный shutdown и несовместимый build guard.
+- [ ] Собрать контрольный wallbang.exe, сохранить SHA256, результаты проверок и список известных ограничений.
+
+**Готово, когда:** нет воспроизводимых падений, накопления ресурсов и необъяснимой деградации; ограничения перечислены честно.
+
+## 12. Что идёт позже
+
+После контрольной версии отдельно выбрать следующую задачу:
+
+- точные wear/seed в inspect;
+- editor наклеек/брелоков с подтверждённым backend;
+- камера/viewmodel после отдельной проверки корректного ClientMode пути;
+- реальные HUD-данные и Lua API;
+- обновление каталога/адресов для новых билдов;
+- combat-прототипы — отдельный объём работ, вне ближайшей очереди.
+
+В этом плане камера не считается работающей: прежний OverrideView путь удалён после падения. Наклейки, брелоки, физическая погода и полный Lua API также не объявлены реализованными.
+
+## 13. Технические ориентиры
+
+- Rust stable, x86_64-pc-windows-msvc; Win32/D3D11, LuaJIT, serde.
+- Один пользовательский deliverable: dist\wallbang.exe с embedded payload; build.bat управляет правильным порядком сборки.
+- Сохранить +crt-static, /DYNAMICBASE и предкомпилированные shaders. Runtime D3DCompile ранее давал воспроизводимое падение.
+- По прямому указанию пользователя allow_writes всегда true; feature toggles, build guard и MutationGuard API сохраняются. Этот пункт заменяет прежнюю политику выключенных записей.
+- Не добавлять per-field VirtualQuery, покадровый файловый лог и покадровое создание RTV.
+- После изменений исходников обновлять graphify. Граф уже установлен и работает.
+- В отчёте проверки указывать build игры, SHA256 exe, сценарий, результат и оставшиеся дефекты.
+
+## 14. Как ведём задачи
+
+Статусы: **очередь → работа → офлайн проверено → в игре проверено → закрыто**. Если игровая проверка неприменима, это явно указывается.
+
+Каждая закрываемая задача получает короткую запись:
+
+| Поле | Что записываем |
+| --- | --- |
+| Дефект/цель | Одно конкретное наблюдаемое поведение |
+| Изменение | Какие файлы/подсистема изменены |
+| Проверка | Команда или повторяемый игровой сценарий |
+| Версия | Build игры и идентификатор проверенного exe |
+| Результат | Прошло / не прошло / ограничение |
+
+**Первая рабочая задача:** P0 в начале документа — убрать просадку FPS, восстановить отзывчивость меню и переключение вкладок, затем по одной проверить добавленные функции. После этого вернуться к этапам 0–8. Ожидаемый ближайший результат — пригодная к проверке сборка, а не новая функция.
+
+## 15. Текущий игровой дефект: падение при появлении меню
+
+- Сборка df8a5023: пользователь воспроизвёл падение в главном меню CS2; лог сохранён в target/tmp/crash-skybox-df8a5023.log.
+- RIP: scenesystem.dll+0x155004. Дизассемблирование установленного scenesystem.dll показывает чтение шестого параметра DrawSkyboxArray из исходного RSP+0x30; Rust hook передавал только четыре параметра.
+- Исправление: ABI hook/original расширен до шести параметров с передачей обоих stack arguments. Добавлен regression test прозрачного forwarding при выключенном skybox removal.
+- cargo check и 37 Rust-тестов прошли. Исправление нельзя считать подтверждённым в игре до повторного отчёта пользователя.
+- Отдельный открытый дефект из того же лога: AutoMakeUserCmd: call hook install failed. Movement пока не считать подключённым в этом запуске; разбирать после стабилизации старта.
+
+## 16. Текущий игровой дефект: статический TLS при старте
+
+- Следующая попытка запуска сборки 9bc14d8f завершилась 0xC0000005 до сообщения config: loaded. Новый лог сохранён в target/tmp/crash-startup-tls-9bc14d8f.log.
+- RIP wallbang.dll+0x130656: обращение к compiler static TLS через GS:[0x58] при создании RandomState-backed таблицы настроек. Выделенный TlsAlloc индекс загрузчика не является полноценной подготовкой PE static TLS.
+- Исправление наблюдаемого пути: локальные HashMap/HashSet payload используют BuildHasherDefault<DefaultHasher>, без обращения к TLS за seed. Заменены таблицы config, state, UI, model, world, skins и Lua events; JSON-совместимость проверена.
+- cargo check и 38 Rust-тестов прошли. Общая поддержка static TLS загрузчиком этим изменением не объявляется исправленной: TLS сторонних библиотек и contended-lock paths требуют отдельного аудита этапа 1.
+- Игровое подтверждение нового старта остаётся открытым. Исходная ошибка skybox ABI и TLS-падение — разные дефекты; последнее не является подтверждением результата skybox-проверки.
+
+## 17. Захват TLS-падений и исправление синхронизации
+
+- Диагностический tools/crashwatch сохранил minidump и регистры. Символизация payload PDB определила mlua::state::Lua::new_with; дополнительный свежий лог определил parking_lot::raw_rwlock::RawRwLock::lock_shared_slow. Оба пути читали незарегистрированный compiler static TLS.
+- Добавлены локальные patch.crates-io версии parking_lot 0.12.5 и parking_lot_core 0.9.12 с сохранением лицензий: Windows parking data переведены на динамический OS FLS, идентификаторы reentrant locks — на GetCurrentThreadId.
+- Render-события Lua передаются owner-потоку сигналом; вызов Lua из Present убран. Shutdown Lua также запрашивается у owner-потока, с ограниченным ожиданием.
+- cargo check прошёл; 39 Rust-тестов прошли. Новый regression test использует шесть CreateThread workers, принудительный RwLock slow path и вложенные ReentrantMutex locks.
+- Обновление по игровому отчёту d58dddd7: в этом прогоне краш не повторился, но обнаружены блокирующие регрессии FPS/UI и неработающие функции. См. первый P0 в начале документа. Произвольная static TLS-совместимость mapper и полное unmap-поведение по-прежнему не объявлены готовыми.
 
 @Leek_Channel

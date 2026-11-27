@@ -23,6 +23,10 @@ gltf = { version = "1", features = ["import"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 parking_lot = "0.12"
 windows = { version = "0.62", features = [
+    "Media_Control",
+    "Storage_Streams",
+    "Foundation_Collections",
+    "Win32_System_WinRT",
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
@@ -54,3 +58,9 @@ lto = "thin"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[patch.crates-io]
+# Windows static TLS is not registered by the manual mapper. The local patches
+# use OS-managed dynamic FLS for parking data and native IDs for reentrant locks.
+parking_lot = { path = "vendor/parking_lot-0.12.5" }
+parking_lot_core = { path = "vendor/parking_lot_core-0.9.12" }

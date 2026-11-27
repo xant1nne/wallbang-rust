@@ -433,6 +433,15 @@ pub fn set_request(active: bool, rect: (f32, f32, f32, f32), screen: (f32, f32),
     }
 }
 
+/// Clearing an inactive preview must not rebuild its per-player flag strings.
+pub fn clear_request() {
+    *LAST_RECT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    if let Some(driver) = lock().as_mut() {
+        driver.engine_active = false;
+        driver.pending = None;
+    }
+}
+
 /// Tick only while the optional engine model is active. Own rendering needs no
 /// Panorama work in either the menu or a live match.
 pub fn wants_menu_tick() -> bool {

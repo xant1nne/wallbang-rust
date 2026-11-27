@@ -62,14 +62,14 @@ impl Pawn {
     #[inline]
     pub unsafe fn local() -> Option<Self> {
         let client = modules::module_base("client.dll")?;
-        let address = memory::read_ptr(client + DW_LOCAL_PLAYER_PAWN)?;
+        let address = memory::read_ptr_unchecked(client + DW_LOCAL_PLAYER_PAWN)?;
         Some(Self::new(address))
     }
 
     #[inline]
     pub unsafe fn local_controller() -> Option<usize> {
         let client = modules::module_base("client.dll")?;
-        memory::read_ptr(client + DW_LOCAL_PLAYER_CONTROLLER)
+        memory::read_ptr_unchecked(client + DW_LOCAL_PLAYER_CONTROLLER)
     }
 
     /// Reads every field used by the world snapshot. `EntityList::iterate()`
@@ -149,33 +149,20 @@ impl Pawn {
     /// actually enabled). Uses the same low 15 bits as the game's handle decoder.
     #[inline]
     pub unsafe fn weapon(self, with_name: bool) -> Option<WeaponFields> {
-        let services = memory::read_ptr(self.address + PAWN_WEAPON_SERVICES)?;
-        if services < MIN_USER_ADDRESS {
-            return None;
-        }
+        let services = memory::read_ptr_unchecked(self.address + PAWN_WEAPON_SERVICES)?;
         let handle = memory::read_unchecked::<u32>(services + WEAPON_SERVICE_ACTIVE)?;
         if handle == 0 || handle == u32::MAX {
             return None;
         }
         let weapon = EntityList::slot((handle & 0x7FFF) as usize)?;
-        if weapon < MIN_USER_ADDRESS {
-            return None;
-        }
-        // vdata is a raw pointer; every read below it is validated so a weapon
-        // that is mid-spawn can never fault the render thread.
-        let vdata = memory::read_ptr(weapon + WEAPON_VDATA).unwrap_or(0);
+        let vdata = memory::read_ptr_unchecked(weapon + WEAPON_VDATA).unwrap_or(0);
         let max_clip = if vdata >= MIN_USER_ADDRESS {
-            memory::read::<i32>(vdata + VDATA_MAX_CLIP1).unwrap_or(0)
+            memory::read_unchecked::<i32>(vdata + VDATA_MAX_CLIP1).unwrap_or(0)
         } else {
             0
         };
-        // Real weapon name: vdata + m_szName is a `const char*` such as
-        // "weapon_ak47"; Celerity normalises + maps it to a display string.
         let name = if with_name && vdata >= MIN_USER_ADDRESS {
-            memory::read_ptr(vdata + VDATA_WEAPON_NAME)
-                .filter(|&pointer| {
-                    pointer >= MIN_USER_ADDRESS && memory::validate_range(pointer, 64)
-                })
+            memory::read_ptr_unchecked(vdata + VDATA_WEAPON_NAME)
                 .and_then(|pointer| memory::read_cstr_unchecked(pointer, 64))
                 .and_then(|raw| weapons::display_for_raw(&raw))
         } else {
@@ -191,45 +178,45 @@ impl Pawn {
 
     #[inline]
     pub fn health(self) -> Option<i32> {
-        unsafe { memory::read_i32(self.address + PAWN_HEALTH) }
+        unsafe { memory::read_unchecked::<i32>(self.address + PAWN_HEALTH) }
     }
 
     #[inline]
     pub fn team(self) -> Option<i32> {
-        unsafe { memory::read_u8(self.address + PAWN_TEAM).map(|v| v as i32) }
+        unsafe { memory::read_unchecked::<u8>(self.address + PAWN_TEAM).map(|v| v as i32) }
     }
 
     #[inline]
     pub fn flags(self) -> Option<u32> {
-        unsafe { memory::read::<u32>(self.address + PAWN_FLAGS) }
+        unsafe { memory::read_unchecked::<u32>(self.address + PAWN_FLAGS) }
     }
 
     /// `m_MoveType` (MOVETYPE_*). Movement-фичи отключаются на ladder/noclip.
     #[inline]
     pub fn move_type(self) -> Option<u8> {
-        unsafe { memory::read_u8(self.address + PAWN_MOVE_TYPE) }
+        unsafe { memory::read_unchecked::<u8>(self.address + PAWN_MOVE_TYPE) }
     }
 
     /// `m_vecAbsVelocity` — скорость в мировых координатах (movement/jumpbug).
     #[inline]
     pub fn abs_velocity(self) -> Option<Vec3> {
-        unsafe { memory::read::<[f32; 3]>(self.address + PAWN_ABS_VELOCITY) }
+        unsafe { memory::read_unchecked::<[f32; 3]>(self.address + PAWN_ABS_VELOCITY) }
             .map(|v| Vec3::new(v[0], v[1], v[2]))
     }
 
     #[inline]
     pub fn armor(self) -> i32 {
-        unsafe { memory::read_i32(self.address + PAWN_ARMOR).unwrap_or(0) }
+        unsafe { memory::read_unchecked::<i32>(self.address + PAWN_ARMOR).unwrap_or(0) }
     }
 
     #[inline]
     pub fn life_state(self) -> Option<u8> {
-        unsafe { memory::read_u8(self.address + PAWN_LIFE_STATE) }
+        unsafe { memory::read_unchecked::<u8>(self.address + PAWN_LIFE_STATE) }
     }
 
     #[inline]
     pub fn velocity(self) -> Option<Vec3> {
-        unsafe { memory::read::<[f32; 3]>(self.address + PAWN_VELOCITY) }
+        unsafe { memory::read_unchecked::<[f32; 3]>(self.address + PAWN_VELOCITY) }
             .map(|v| Vec3::new(v[0], v[1], v[2]))
     }
 
@@ -243,19 +230,19 @@ impl Pawn {
     /// `m_vecViewOffset` (CNetworkViewOffsetVector, xyz) как Vec3.
     #[inline]
     pub fn view_offset_value(self) -> Option<Vec3> {
-        unsafe { memory::read::<[f32; 3]>(self.address + PAWN_VIEW_OFFSET) }
+        unsafe { memory::read_unchecked::<[f32; 3]>(self.address + PAWN_VIEW_OFFSET) }
             .map(|v| Vec3::new(v[0], v[1], v[2]))
     }
 
     #[inline]
     pub fn spotted(self) -> bool {
-        unsafe { memory::read_u8(self.address + PAWN_SPOTTED).unwrap_or(0) != 0 }
+        unsafe { memory::read_unchecked::<u8>(self.address + PAWN_SPOTTED).unwrap_or(0) != 0 }
     }
 
     /// `m_bIsScoped` (камера/FOV используют это каждый кадр).
     #[inline]
     pub fn scoped(self) -> bool {
-        unsafe { memory::read_u8(self.address + PAWN_SCOPED).unwrap_or(0) != 0 }
+        unsafe { memory::read_unchecked::<u8>(self.address + PAWN_SCOPED).unwrap_or(0) != 0 }
     }
 
     #[inline]
@@ -265,8 +252,8 @@ impl Pawn {
 
     #[inline]
     pub fn origin(self) -> Option<Vec3> {
-        let node = unsafe { memory::read_ptr(self.address + PAWN_SCENE_NODE) }?;
-        unsafe { memory::read::<[f32; 3]>(node + PAWN_ABS_ORIGIN) }
+        let node = unsafe { memory::read_ptr_unchecked(self.address + PAWN_SCENE_NODE) }?;
+        unsafe { memory::read_unchecked::<[f32; 3]>(node + PAWN_ABS_ORIGIN) }
             .map(|v| Vec3::new(v[0], v[1], v[2]))
     }
 
@@ -280,13 +267,7 @@ impl Pawn {
 
     pub fn player_name(controller: usize) -> Option<String> {
         unsafe {
-            if controller == 0 || !memory::validate_range(controller, CONTROLLER_PLAYER_NAME + 8) {
-                return None;
-            }
-            let string = memory::read_unchecked::<usize>(controller + CONTROLLER_PLAYER_NAME)?;
-            if string == 0 || !memory::validate_range(string, 128) {
-                return None;
-            }
+            let string = memory::read_ptr_unchecked(controller + CONTROLLER_PLAYER_NAME)?;
             memory::read_cstr_unchecked(string, 128)
         }
     }
@@ -295,13 +276,11 @@ impl Pawn {
     /// entity index in the low 15 bits, exactly like `m_hActiveWeapon`.
     #[inline]
     pub unsafe fn controller(self) -> Option<usize> {
-        const MIN_USER_ADDRESS: usize = 0x10000;
         let handle = memory::read_unchecked::<u32>(self.address + PAWN_CONTROLLER_HANDLE)?;
         if handle == 0 || handle == u32::MAX {
             return None;
         }
-        let controller = EntityList::slot((handle & 0x7FFF) as usize)?;
-        (controller >= MIN_USER_ADDRESS).then_some(controller)
+        EntityList::slot((handle & 0x7FFF) as usize)
     }
 
     /// Sanitized `m_sSanitizedPlayerName` for this pawn's controller.
@@ -315,47 +294,35 @@ impl Pawn {
     #[inline]
     pub unsafe fn money(self) -> Option<i32> {
         let controller = self.controller()?;
-        let services = memory::read_ptr(controller + CONTROLLER_MONEY_SERVICES)?;
-        if services < MIN_USER_ADDRESS {
-            return None;
-        }
-        memory::read::<i32>(services + MONEY_ACCOUNT)
+        let services = memory::read_ptr_unchecked(controller + CONTROLLER_MONEY_SERVICES)?;
+        memory::read_unchecked::<i32>(services + MONEY_ACCOUNT)
     }
 
     /// `(has_helmet, has_defuser)` from `CCSPlayer_ItemServices`.
     #[inline]
     pub unsafe fn item_services(self) -> Option<(bool, bool)> {
-        let services = memory::read_ptr(self.address + PAWN_ITEM_SERVICES)?;
-        if services < MIN_USER_ADDRESS {
-            return None;
-        }
-        let helmet = memory::read_u8(services + ITEM_SERVICES_HELMET).unwrap_or(0) != 0;
-        let defuser = memory::read_u8(services + ITEM_SERVICES_DEFUSER).unwrap_or(0) != 0;
+        let services = memory::read_ptr_unchecked(self.address + PAWN_ITEM_SERVICES)?;
+        let helmet = memory::read_unchecked::<u8>(services + ITEM_SERVICES_HELMET).unwrap_or(0) != 0;
+        let defuser = memory::read_unchecked::<u8>(services + ITEM_SERVICES_DEFUSER).unwrap_or(0) != 0;
         Some((helmet, defuser))
     }
 
     /// Walks `m_hMyWeapons` (`C_NetworkUtlVectorBase<CHandle>`) looking for C4.
     #[inline]
     pub unsafe fn has_c4(self) -> bool {
-        let Some(services) = memory::read_ptr(self.address + PAWN_WEAPON_SERVICES) else {
+        let Some(services) = memory::read_ptr_unchecked(self.address + PAWN_WEAPON_SERVICES) else {
             return false;
         };
-        if services < MIN_USER_ADDRESS {
-            return false;
-        }
-        let size = memory::read::<u32>(services + WEAPON_SERVICES_WEAPONS + NET_VECTOR_SIZE)
+        let size = memory::read_unchecked::<u32>(services + WEAPON_SERVICES_WEAPONS + NET_VECTOR_SIZE)
             .unwrap_or(0) as usize;
         if size == 0 || size > MAX_OWNED_WEAPONS {
             return false;
         }
         let Some(data) =
-            memory::read_ptr(services + WEAPON_SERVICES_WEAPONS + NET_VECTOR_DATA)
+            memory::read_ptr_unchecked(services + WEAPON_SERVICES_WEAPONS + NET_VECTOR_DATA)
         else {
             return false;
         };
-        if data < MIN_USER_ADDRESS || !memory::validate_range(data, size * 4) {
-            return false;
-        }
         for index in 0..size {
             let handle = memory::read_unchecked::<u32>(data + index * 4).unwrap_or(0);
             if handle == 0 || handle == u32::MAX {
@@ -364,11 +331,8 @@ impl Pawn {
             let Some(weapon) = EntityList::slot((handle & 0x7FFF) as usize) else {
                 continue;
             };
-            if weapon < MIN_USER_ADDRESS {
-                continue;
-            }
             let def_index =
-                memory::read::<u16>(weapon + WEAPON_DEF_INDEX).unwrap_or(0) as i16;
+                memory::read_unchecked::<u16>(weapon + WEAPON_DEF_INDEX).unwrap_or(0) as i16;
             if def_index == WEAPON_C4_DEF_INDEX {
                 return true;
             }
